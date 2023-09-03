@@ -4,14 +4,14 @@ isuports: test go.mod go.sum *.go cmd/isuports/*
 test:
 	go test -v ./...
 
-build: go.mod go.sum *.go cmd/isuports/*
-	go build -o isuports ./cmd/isuports
+build:
+	echo "build is not needed"
 
 deploy:
-	sudo systemctl stop isuports.service
-	cp isuports ~/webapp/go/
+	sudo systemctl daemon-reload
+	cp -r ./ ~/webapp/go/
 	cp -r ../sql ~/webapp/
-	sudo systemctl start isuports.service
+	sudo systemctl restart isuports.service
 
 show-applog:
 	sudo journalctl -u isuports.service
