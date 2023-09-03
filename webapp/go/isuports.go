@@ -811,9 +811,9 @@ func playersAddHandler(c echo.Context) error {
 	}
 
 	// bulk insert
-	if _, err = tenantDB.ExecContext(
+	if _, err = tenantDB.NamedExecContext(
 		ctx,
-		"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (:id, :tenant_id, :display_name, :is_disqualified, :created_at, :updated_at)",
 		players,
 	); err != nil {
 		return fmt.Errorf("error Insert player at tenantDB, %w", err)
