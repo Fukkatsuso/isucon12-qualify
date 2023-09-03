@@ -4,7 +4,7 @@ isuports: test go.mod go.sum *.go cmd/isuports/*
 test:
 	go test -v ./...
 
-build: test go.mod go.sum *.go cmd/isuports/*
+build: go.mod go.sum *.go cmd/isuports/*
 	go build -o isuports ./cmd/isuports
 
 deploy:
