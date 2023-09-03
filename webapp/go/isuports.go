@@ -816,7 +816,7 @@ func playersAddHandler(c echo.Context) error {
 		"INSERT INTO player (id, tenant_id, display_name, is_disqualified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
 		players,
 	); err != nil {
-		return fmt.Errorf("error Insert player at tenantDB")
+		return fmt.Errorf("error Insert player at tenantDB, %w", err)
 		// fmt.Errorf(
 		// 	"error Insert player at tenantDB: id=%s, displayName=%s, isDisqualified=%t, createdAt=%d, updatedAt=%d, %w",
 		// 	ids[i], displayName, false, now, now, err,
