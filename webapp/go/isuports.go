@@ -538,12 +538,7 @@ type VisitHistorySummaryRow struct {
 }
 
 // 大会ごとの課金レポートを計算する
-func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, competitonID string) (*BillingReport, error) {
-	comp, err := retrieveCompetition(ctx, tenantDB, competitonID)
-	if err != nil {
-		return nil, fmt.Errorf("error retrieveCompetition: %w", err)
-	}
-
+func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, comp *CompetitionRow) (*BillingReport, error) {
 	// ランキングにアクセスした参加者のIDを取得する
 	vhs := []VisitHistorySummaryRow{}
 	if err := adminDB.SelectContext(
@@ -579,7 +574,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
 		tenantID, comp.ID,
 	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, competitonID, err)
+		return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 	}
 	for _, pid := range scoredPlayerIDs {
 		// スコアが登録されている参加者
@@ -658,14 +653,17 @@ func tenantsBillingHandler(c echo.Context) error {
 	//   を合計したものを
 	// テナントの課金とする
 	ts := []TenantRow{}
-	if err := adminDB.SelectContext(ctx, &ts, "SELECT * FROM tenant ORDER BY id DESC"); err != nil {
-		return fmt.Errorf("error Select tenant: %w", err)
+	if beforeID != 0 {
+		if err := adminDB.SelectContext(ctx, &ts, "SELECT * FROM tenant WHERE id < ? ORDER BY id DESC LIMIT 10", beforeID); err != nil {
+			return fmt.Errorf("error Select tenant: %w", err)
+		}
+	} else {
+		if err := adminDB.SelectContext(ctx, &ts, "SELECT * FROM tenant ORDER BY id DESC LIMIT 10"); err != nil {
+			return fmt.Errorf("error Select tenant: %w", err)
+		}
 	}
 	tenantBillings := make([]TenantWithBilling, 0, len(ts))
 	for _, t := range ts {
-		if beforeID != 0 && beforeID <= t.ID {
-			continue
-		}
 		err := func(t TenantRow) error {
 			tb := TenantWithBilling{
 				ID:          strconv.FormatInt(t.ID, 10),
@@ -687,20 +685,18 @@ func tenantsBillingHandler(c echo.Context) error {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
 			for _, comp := range cs {
-				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, comp.ID)
+				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, &comp)
 				if err != nil {
 					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
 				}
 				tb.BillingYen += report.BillingYen
 			}
+
 			tenantBillings = append(tenantBillings, tb)
 			return nil
 		}(t)
 		if err != nil {
 			return err
-		}
-		if len(tenantBillings) >= 10 {
-			break
 		}
 	}
 	return c.JSON(http.StatusOK, SuccessResult{
@@ -1160,7 +1156,7 @@ func billingHandler(c echo.Context) error {
 	}
 	tbrs := make([]BillingReport, 0, len(cs))
 	for _, comp := range cs {
-		report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, comp.ID)
+		report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, &comp)
 		if err != nil {
 			return fmt.Errorf("error billingReportByCompetition: %w", err)
 		}
