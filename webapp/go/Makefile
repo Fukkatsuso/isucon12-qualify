@@ -8,10 +8,10 @@ build: go.mod go.sum *.go cmd/isuports/*
 	go build -o isuports ./cmd/isuports
 
 deploy:
-	sudo systemctl stop isuports.go.service
+	sudo systemctl stop isuports.service
 	cp isuports ~/webapp/go/
 	cp -r ../sql ~/webapp/
-	sudo systemctl start isuports.go.service
+	sudo systemctl start isuports.service
 
 show-applog:
-	sudo journalctl -u isuports.go.service
+	sudo journalctl -u isuports.service
