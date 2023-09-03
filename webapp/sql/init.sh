@@ -10,21 +10,23 @@ ISUCON_DB_PASSWORD=${ISUCON_DB_PASSWORD:-isucon}
 ISUCON_DB_NAME=${ISUCON_DB_NAME:-isuports}
 
 # MySQLを初期化
-mysql -u"$ISUCON_DB_USER" \
-		-p"$ISUCON_DB_PASSWORD" \
-		--host "$ISUCON_DB_HOST" \
-		--port "$ISUCON_DB_PORT" \
-		"$ISUCON_DB_NAME" < admin/01_create_mysql_database.sql
-mysql -u"$ISUCON_DB_USER" \
-		-p"$ISUCON_DB_PASSWORD" \
-		--host "$ISUCON_DB_HOST" \
-		--port "$ISUCON_DB_PORT" \
-		"$ISUCON_DB_NAME" < admin/10_schema.sql
-mysql -u"$ISUCON_DB_USER" \
-		-p"$ISUCON_DB_PASSWORD" \
-		--host "$ISUCON_DB_HOST" \
-		--port "$ISUCON_DB_PORT" \
-		"$ISUCON_DB_NAME" < admin/90_data.sql
+# CREATE USER の権限がないので失敗する（実行しなくても大丈夫そう）
+# mysql -u"$ISUCON_DB_USER" \
+# 		-p"$ISUCON_DB_PASSWORD" \
+# 		--host "$ISUCON_DB_HOST" \
+# 		--port "$ISUCON_DB_PORT" \
+# 		"$ISUCON_DB_NAME" < admin/01_create_mysql_database.sql
+# 時間がかかるので、手動で実行する
+# mysql -u"$ISUCON_DB_USER" \
+# 		-p"$ISUCON_DB_PASSWORD" \
+# 		--host "$ISUCON_DB_HOST" \
+# 		--port "$ISUCON_DB_PORT" \
+# 		"$ISUCON_DB_NAME" < admin/10_schema.sql
+# mysql -u"$ISUCON_DB_USER" \
+# 		-p"$ISUCON_DB_PASSWORD" \
+# 		--host "$ISUCON_DB_HOST" \
+# 		--port "$ISUCON_DB_PORT" \
+# 		"$ISUCON_DB_NAME" < admin/90_data.sql
 mysql -u"$ISUCON_DB_USER" \
 		-p"$ISUCON_DB_PASSWORD" \
 		--host "$ISUCON_DB_HOST" \
