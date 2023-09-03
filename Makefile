@@ -11,7 +11,7 @@ bench-prepare:
 	sudo systemctl restart mysql.service
 
 bench-result:
-	mkdir -p alp
+	mkdir -p alp/dump
 	cat /var/log/nginx/access.log \
 	| alp ltsv \
 		-m '*' \
