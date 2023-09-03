@@ -14,13 +14,14 @@ bench-result:
 	mkdir -p alp/dump
 	cat /var/log/nginx/access.log \
 	| alp ltsv \
-		-m '*' \
+		-m '/api/organizer/player/[0-9a-z]+/disqualified,/api/organizer/competition/[0-9a-z]+/finish,/api/organizer/competition/[0-9a-z]+/score,/api/player/player/[0-9a-z]+,/api/player/competition/[0-9a-z]+/ranking' \
 		--sort avg -r --dump alp/dump/`git show --format='%h' --no-patch` \
 	> /dev/null
 
 latest-alp:
 	mkdir -p alp/result
-	alp ltsv --load alp/dump/`git show --format='%h' --no-patch` > alp/result/`git show --format='%h' --no-patch`
+	alp ltsv --sort avg -r --load alp/dump/`git show --format='%h' --no-patch` \
+		> alp/result/`git show --format='%h' --no-patch`
 	vim alp/result/`git show --format='%h' --no-patch`
 
 show-slowlog:
