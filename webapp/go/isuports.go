@@ -901,6 +901,18 @@ func playerDisqualifiedHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
+	// update playerCache
+	playerCache.mu.Lock()
+	playerCache.data[playerID] = &PlayerRow{
+		TenantID:       p.TenantID,
+		ID:             p.ID,
+		DisplayName:    p.DisplayName,
+		IsDisqualified: true,
+		CreatedAt:      p.CreatedAt,
+		UpdatedAt:      now,
+	}
+	playerCache.mu.Unlock()
+
 	res := PlayerDisqualifiedHandlerResult{
 		Player: PlayerDetail{
 			ID:             p.ID,
