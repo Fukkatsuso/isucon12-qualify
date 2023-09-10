@@ -8,6 +8,8 @@ services:
       ISUCON_DB_PASSWORD: isucon
       ISUCON_DB_NAME: isuports
     network_mode: host
+    env_file:
+      - /home/isucon/webapp/env.sh
     volumes:
       - /home/isucon/webapp/tenant_db:/home/isucon/webapp/tenant_db
       - /home/isucon/webapp/sql:/home/isucon/webapp/sql

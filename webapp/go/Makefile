@@ -11,6 +11,7 @@ deploy:
 	sudo systemctl daemon-reload
 	cp -r ./ ~/webapp/go/
 	cp -r ../sql ~/webapp/
+	cp ../docker-compose-go.yml ~/webapp/
 	sudo systemctl restart isuports.service
 
 show-applog:
