@@ -1275,7 +1275,7 @@ func playerHandler(c echo.Context) error {
 	psds := []PlayerScoreDetail{}
 	query := `
 		SELECT
-			competition.title AS conpetition_title,
+			competition.title AS competition_title,
 			p.score AS score
 		FROM
 			competition
