@@ -722,8 +722,8 @@ func tenantsBillingHandler(c echo.Context) error {
 			for rows.Next() {
 				var row CompetitionRow
 				if err = rows.Scan(
-					&row.TenantID,
 					&row.ID,
+					&row.TenantID,
 					&row.Title,
 					&row.FinishedAt,
 					&row.CreatedAt,
