@@ -29,3 +29,14 @@ show-slowlog:
 
 show-applog:
 	make -C webapp/go show-applog
+
+enable-pprof:
+	sed -i -e 's/PPROF=0/PPROF=1/' ~/webapp/env.sh
+
+disable-pprof:
+	sed -i -e 's/PPROF=1/PPROF=0/' ~/webapp/env.sh
+
+start-pprof: enable-pprof deploy
+	sleep 3 # wait surver up
+	go tool pprof -http=0.0.0.0:1080 http://localhost:6060/debug/pprof/profile?seconds=80
+

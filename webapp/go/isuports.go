@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,8 +132,22 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+func GetEnv(key, val string) string {
+	if v := os.Getenv(key); v == "" {
+		return val
+	} else {
+		return v
+	}
+}
+
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
+	if GetEnv("PPROF", "0") == "1" {
+		go func() {
+			fmt.Println(http.ListenAndServe(":6060", nil))
+		}()
+	}
+
 	e := echo.New()
 	e.Debug = true
 	e.Logger.SetLevel(log.DEBUG)
