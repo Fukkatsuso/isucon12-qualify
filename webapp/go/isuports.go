@@ -1292,7 +1292,7 @@ func playerHandler(c echo.Context) error {
 		ORDER BY
 			competition.created_at ASC
 	`
-	if err := tenantDB.GetContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := tenantDB.SelectContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
 	}
 
