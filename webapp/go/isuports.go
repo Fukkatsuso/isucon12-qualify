@@ -710,21 +710,33 @@ func tenantsBillingHandler(c echo.Context) error {
 				return fmt.Errorf("failed to connectToTenantDB: %w", err)
 			}
 			defer tenantDB.Close()
-			cs := []CompetitionRow{}
-			if err := tenantDB.SelectContext(
-				ctx,
-				&cs,
-				"SELECT * FROM competition WHERE tenant_id=?",
-				t.ID,
-			); err != nil {
+
+			tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+			defer tx.Rollback()
+
+			rows, err := tx.QueryContext(ctx, "SELECT * FROM competition WHERE tenant_id=?", t.ID)
+			if err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
+			cs := []CompetitionRow{}
+			for rows.Next() {
+				var row CompetitionRow
+				if err = rows.Scan(&row); err != nil {
+					return fmt.Errorf("failed to scan row: %w", err)
+				}
+				cs = append(cs, row)
+			}
+
 			for _, comp := range cs {
-				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, &comp)
+				report, err := billingReportByCompetition(ctx, tx, t.ID, &comp)
 				if err != nil {
 					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
 				}
 				tb.BillingYen += report.BillingYen
+			}
+
+			if err = tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
 			tenantBillings = append(tenantBillings, tb)
