@@ -2,9 +2,11 @@ build:
 	make -C webapp/go build
 
 deploy:
+	mkdir -p ~/webapp/sqlite && touch ~/webapp/sqlite/trace.json
 	make -C webapp/go deploy
 
 bench-prepare:
+	rm -f ~/webapp/sqlite/trace.json && touch ~/webapp/sqlite/trace.json
 	sudo rm -f /var/log/nginx/access.log
 	sudo systemctl reload nginx.service
 	sudo rm -f /var/log/mysql/mysql-slow.log
