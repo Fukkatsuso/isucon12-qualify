@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -382,12 +383,31 @@ type PlayerRow struct {
 	UpdatedAt      int64  `db:"updated_at"`
 }
 
+var playerCache struct {
+	mu   sync.Mutex
+	data map[string]*PlayerRow
+}
+
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
+	// get from cache
+	playerCache.mu.Lock()
+	v, ok := playerCache.data[id]
+	playerCache.mu.Unlock()
+	if ok {
+		return v, nil
+	}
+
 	var p PlayerRow
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
+
+	// set cache
+	playerCache.mu.Lock()
+	playerCache.data[id] = &p
+	playerCache.mu.Unlock()
+
 	return &p, nil
 }
 
@@ -881,11 +901,23 @@ func playerDisqualifiedHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
+	// update playerCache
+	playerCache.mu.Lock()
+	playerCache.data[playerID] = &PlayerRow{
+		TenantID:       p.TenantID,
+		ID:             p.ID,
+		DisplayName:    p.DisplayName,
+		IsDisqualified: true,
+		CreatedAt:      p.CreatedAt,
+		UpdatedAt:      now,
+	}
+	playerCache.mu.Unlock()
+
 	res := PlayerDisqualifiedHandlerResult{
 		Player: PlayerDetail{
 			ID:             p.ID,
 			DisplayName:    p.DisplayName,
-			IsDisqualified: p.IsDisqualified,
+			IsDisqualified: true,
 		},
 	}
 	return c.JSON(http.StatusOK, SuccessResult{Status: true, Data: res})
@@ -1188,8 +1220,8 @@ func billingHandler(c echo.Context) error {
 }
 
 type PlayerScoreDetail struct {
-	CompetitionTitle string `json:"competition_title"`
-	Score            int64  `json:"score"`
+	CompetitionTitle string `json:"competition_title" db:"competition_title"`
+	Score            int64  `json:"score" db:"score"`
 }
 
 type PlayerHandlerResult struct {
@@ -1232,15 +1264,6 @@ func playerHandler(c echo.Context) error {
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
-	cs := []CompetitionRow{}
-	if err := tenantDB.SelectContext(
-		ctx,
-		&cs,
-		"SELECT * FROM competition WHERE tenant_id = ? ORDER BY created_at ASC",
-		v.tenantID,
-	); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("error Select competition: %w", err)
-	}
 
 	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	fl, err := flockByTenantID(v.tenantID)
@@ -1248,37 +1271,30 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error flockByTenantID: %w", err)
 	}
 	defer fl.Close()
-	pss := make([]PlayerScoreRow, 0, len(cs))
-	for _, c := range cs {
-		ps := PlayerScoreRow{}
-		if err := tenantDB.GetContext(
-			ctx,
-			&ps,
-			// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-			"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
-			v.tenantID,
-			c.ID,
-			p.ID,
-		); err != nil {
-			// 行がない = スコアが記録されてない
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
-		}
-		pss = append(pss, ps)
-	}
 
-	psds := make([]PlayerScoreDetail, 0, len(pss))
-	for _, ps := range pss {
-		comp, err := retrieveCompetition(ctx, tenantDB, ps.CompetitionID)
-		if err != nil {
-			return fmt.Errorf("error retrieveCompetition: %w", err)
-		}
-		psds = append(psds, PlayerScoreDetail{
-			CompetitionTitle: comp.Title,
-			Score:            ps.Score,
-		})
+	psds := []PlayerScoreDetail{}
+	query := `
+		SELECT
+			competition.title AS competition_title,
+			p.score AS score
+		FROM
+			competition
+		LEFT JOIN
+			player_score p ON p.id = (
+				SELECT id
+				FROM player_score
+				WHERE player_id = ? AND competition_id = competition.id
+				ORDER BY row_num DESC
+				LIMIT 1
+			)
+		WHERE
+			competition.tenant_id = ? AND
+			p.id IS NOT NULL
+		ORDER BY
+			competition.created_at ASC
+	`
+	if err := tenantDB.SelectContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
 	}
 
 	res := SuccessResult{
@@ -1624,6 +1640,14 @@ func initializeHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
+
+	playerCache = struct {
+		mu   sync.Mutex
+		data map[string]*PlayerRow
+	}{
+		data: make(map[string]*PlayerRow),
+	}
+
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
