@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -382,12 +383,31 @@ type PlayerRow struct {
 	UpdatedAt      int64  `db:"updated_at"`
 }
 
+var playerCache struct {
+	mu   sync.Mutex
+	data map[string]*PlayerRow
+}
+
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
+	// get from cache
+	playerCache.mu.Lock()
+	v, ok := playerCache.data[id]
+	playerCache.mu.Unlock()
+	if ok {
+		return v, nil
+	}
+
 	var p PlayerRow
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
+
+	// set cache
+	playerCache.mu.Lock()
+	playerCache.data[id] = &p
+	playerCache.mu.Unlock()
+
 	return &p, nil
 }
 
@@ -1624,6 +1644,14 @@ func initializeHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
+
+	playerCache = struct {
+		mu   sync.Mutex
+		data map[string]*PlayerRow
+	}{
+		data: make(map[string]*PlayerRow),
+	}
+
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
