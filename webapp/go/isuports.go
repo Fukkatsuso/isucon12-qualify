@@ -721,7 +721,14 @@ func tenantsBillingHandler(c echo.Context) error {
 			cs := []CompetitionRow{}
 			for rows.Next() {
 				var row CompetitionRow
-				if err = rows.Scan(&row); err != nil {
+				if err = rows.Scan(
+					&row.TenantID,
+					&row.ID,
+					&row.Title,
+					&row.FinishedAt,
+					&row.CreatedAt,
+					&row.UpdatedAt,
+				); err != nil {
 					return fmt.Errorf("failed to scan row: %w", err)
 				}
 				cs = append(cs, row)
