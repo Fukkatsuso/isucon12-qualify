@@ -712,12 +712,12 @@ func tenantsBillingHandler(c echo.Context) error {
 			defer tenantDB.Close()
 
 			tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-			defer tx.Rollback()
 
 			rows, err := tx.QueryContext(ctx, "SELECT * FROM competition WHERE tenant_id=?", t.ID)
 			if err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
+			defer rows.Close()
 			cs := []CompetitionRow{}
 			for rows.Next() {
 				var row CompetitionRow
