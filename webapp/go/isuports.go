@@ -1288,7 +1288,8 @@ func playerHandler(c echo.Context) error {
 				LIMIT 1
 			)
 		WHERE
-			competition.tenant_id = ?
+			competition.tenant_id = ? AND
+			p.id IS NOT NULL
 		ORDER BY
 			competition.created_at ASC
 	`
