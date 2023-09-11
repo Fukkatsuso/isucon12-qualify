@@ -764,20 +764,14 @@ func playersListHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-
 	var pls []PlayerRow
-	if err := tx.SelectContext(
+	if err := tenantDB.SelectContext(
 		ctx,
 		&pls,
 		"SELECT * FROM player WHERE tenant_id=? ORDER BY created_at DESC",
 		v.tenantID,
 	); err != nil {
 		return fmt.Errorf("error Select player: %w", err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	var pds []PlayerDetail
@@ -970,9 +964,7 @@ func competitionsAddHandler(c echo.Context) error {
 		return fmt.Errorf("error dispenseID: %w", err)
 	}
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(
+	if _, err := tenantDB.ExecContext(
 		ctx,
 		"INSERT INTO competition (id, tenant_id, title, finished_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
 		id, v.tenantID, title, sql.NullInt64{}, now, now,
@@ -981,10 +973,6 @@ func competitionsAddHandler(c echo.Context) error {
 			"error Insert competition: id=%s, tenant_id=%d, title=%s, finishedAt=null, createdAt=%d, updatedAt=%d, %w",
 			id, v.tenantID, title, now, now, err,
 		)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	res := CompetitionsAddHandlerResult{
@@ -1509,21 +1497,10 @@ func playerCompetitionsHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-
-	if err := authorizePlayer(ctx, tx, v.playerID); err != nil {
+	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
 		return err
 	}
-	err = competitionsHandler(c, v, tx)
-	if err != nil {
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
+	return competitionsHandler(c, v, tenantDB)
 }
 
 // テナント管理者向けAPI
@@ -1544,18 +1521,7 @@ func organizerCompetitionsHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
-
-	err = competitionsHandler(c, v, tx)
-	if err != nil {
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
+	return competitionsHandler(c, v, tenantDB)
 }
 
 func competitionsHandler(c echo.Context, v *Viewer, tenantDB dbOrTx) error {
