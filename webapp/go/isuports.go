@@ -1268,7 +1268,9 @@ func playerHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+
+	if err := authorizePlayer(ctx, tx, v.playerID); err != nil {
 		return err
 	}
 
@@ -1276,7 +1278,7 @@ func playerHandler(c echo.Context) error {
 	if playerID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "player_id is required")
 	}
-	p, err := retrievePlayer(ctx, tenantDB, playerID)
+	p, err := retrievePlayer(ctx, tx, playerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusNotFound, "player not found")
@@ -1312,8 +1314,12 @@ func playerHandler(c echo.Context) error {
 		ORDER BY
 			competition.created_at ASC
 	`
-	if err := tenantDB.SelectContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := tx.SelectContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	res := SuccessResult{
