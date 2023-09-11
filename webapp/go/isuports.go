@@ -1015,14 +1015,11 @@ func competitionFinishHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
-	defer tx.Rollback()
-
 	id := c.Param("competition_id")
 	if id == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "competition_id required")
 	}
-	_, err = retrieveCompetition(ctx, tx, id)
+	_, err = retrieveCompetition(ctx, tenantDB, id)
 	if err != nil {
 		// 存在しない大会
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1032,7 +1029,7 @@ func competitionFinishHandler(c echo.Context) error {
 	}
 
 	now := time.Now().Unix()
-	if _, err := tx.ExecContext(
+	if _, err := tenantDB.ExecContext(
 		ctx,
 		"UPDATE competition SET finished_at = ?, updated_at = ? WHERE id = ?",
 		now, now, id,
@@ -1043,9 +1040,6 @@ func competitionFinishHandler(c echo.Context) error {
 		)
 	}
 
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
