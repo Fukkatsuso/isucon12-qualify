@@ -1076,8 +1076,8 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	// read tx
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	defer tx.Rollback()
 
 	competitionID := c.Param("competition_id")
 	if competitionID == "" {
@@ -1166,14 +1166,6 @@ func competitionScoreHandler(c echo.Context) error {
 			UpdatedAt:     now,
 		})
 	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// write tx
-	tx = tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
-	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(
 		ctx,
@@ -1389,7 +1381,7 @@ func competitionRankingHandler(c echo.Context) error {
 	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
 	defer tx.Rollback()
 
-	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
+	if err := authorizePlayer(ctx, tx, v.playerID); err != nil {
 		return err
 	}
 
