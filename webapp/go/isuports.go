@@ -903,20 +903,13 @@ func playerDisqualifiedHandler(c echo.Context) error {
 	// 	)
 	// }
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	defer tx.Rollback()
-
-	p, err := retrievePlayer(ctx, tx, playerID)
+	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		// 存在しないプレイヤー
 		if errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusNotFound, "player not found")
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	// update playerCache
