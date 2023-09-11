@@ -1074,11 +1074,14 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
+	// read tx
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+
 	competitionID := c.Param("competition_id")
 	if competitionID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "competition_id required")
 	}
-	comp, err := retrieveCompetition(ctx, tenantDB, competitionID)
+	comp, err := retrieveCompetition(ctx, tx, competitionID)
 	if err != nil {
 		// 存在しない大会
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1113,12 +1116,6 @@ func competitionScoreHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid CSV headers")
 	}
 
-	// / DELETEしたタイミングで参照が来ると空っぽのランキングになるのでロックする
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
 	var rowNum int64
 	playerScoreRows := []PlayerScoreRow{}
 	for {
@@ -1134,7 +1131,7 @@ func competitionScoreHandler(c echo.Context) error {
 			return fmt.Errorf("row must have two columns: %#v", row)
 		}
 		playerID, scoreStr := row[0], row[1]
-		if _, err := retrievePlayer(ctx, tenantDB, playerID); err != nil {
+		if _, err := retrievePlayer(ctx, tx, playerID); err != nil {
 			// 存在しない参加者が含まれている
 			if errors.Is(err, sql.ErrNoRows) {
 				return echo.NewHTTPError(
@@ -1168,7 +1165,15 @@ func competitionScoreHandler(c echo.Context) error {
 		})
 	}
 
-	if _, err := tenantDB.ExecContext(
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// write tx
+	tx = tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(
 		ctx,
 		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
 		v.tenantID,
@@ -1177,7 +1182,7 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 	for _, ps := range playerScoreRows {
-		if _, err := tenantDB.NamedExecContext(
+		if _, err := tx.NamedExecContext(
 			ctx,
 			"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
 			ps,
@@ -1188,6 +1193,10 @@ func competitionScoreHandler(c echo.Context) error {
 			)
 
 		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
