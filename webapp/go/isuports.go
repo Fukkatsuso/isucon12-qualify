@@ -887,10 +887,24 @@ func playerDisqualifiedHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
-	defer tx.Rollback()
-
 	playerID := c.Param("player_id")
+
+	now := time.Now().Unix()
+	// なんか commit に失敗する
+	// どうせキャッシュに乗るんだったら DB 更新しなくていいや
+	// if _, err := tx.ExecContext(
+	// 	ctx,
+	// 	"UPDATE player SET is_disqualified = ?, updated_at = ? WHERE id = ?",
+	// 	true, now, playerID,
+	// ); err != nil {
+	// 	return fmt.Errorf(
+	// 		"error Update player: isDisqualified=%t, updatedAt=%d, id=%s, %w",
+	// 		true, now, playerID, err,
+	// 	)
+	// }
+
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	defer tx.Rollback()
 
 	p, err := retrievePlayer(ctx, tx, playerID)
 	if err != nil {
@@ -899,18 +913,6 @@ func playerDisqualifiedHandler(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusNotFound, "player not found")
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
-	}
-
-	now := time.Now().Unix()
-	if _, err := tx.ExecContext(
-		ctx,
-		"UPDATE player SET is_disqualified = ?, updated_at = ? WHERE id = ?",
-		true, now, playerID,
-	); err != nil {
-		return fmt.Errorf(
-			"error Update player: isDisqualified=%t, updatedAt=%d, id=%s, %w",
-			true, now, playerID, err,
-		)
 	}
 
 	if err = tx.Commit(); err != nil {
