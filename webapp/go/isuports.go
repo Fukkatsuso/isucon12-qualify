@@ -981,6 +981,7 @@ func competitionsAddHandler(c echo.Context) error {
 	}
 
 	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	defer tx.Rollback()
 	if _, err := tx.ExecContext(
 		ctx,
 		"INSERT INTO competition (id, tenant_id, title, finished_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1302,13 +1303,6 @@ func playerHandler(c echo.Context) error {
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
-
-	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
-	fl, err := flockByTenantID(v.tenantID)
-	if err != nil {
-		return fmt.Errorf("error flockByTenantID: %w", err)
-	}
-	defer fl.Close()
 
 	psds := []PlayerScoreDetail{}
 	query := `
