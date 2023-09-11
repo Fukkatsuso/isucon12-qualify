@@ -764,8 +764,10 @@ func playersListHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+
 	var pls []PlayerRow
-	if err := tenantDB.SelectContext(
+	if err := tx.SelectContext(
 		ctx,
 		&pls,
 		"SELECT * FROM player WHERE tenant_id=? ORDER BY created_at DESC",
@@ -773,6 +775,11 @@ func playersListHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error Select player: %w", err)
 	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
 	var pds []PlayerDetail
 	for _, p := range pls {
 		pds = append(pds, PlayerDetail{
@@ -1520,10 +1527,21 @@ func playerCompetitionsHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+
+	if err := authorizePlayer(ctx, tx, v.playerID); err != nil {
 		return err
 	}
-	return competitionsHandler(c, v, tenantDB)
+	err = competitionsHandler(c, v, tx)
+	if err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 // テナント管理者向けAPI
@@ -1544,7 +1562,18 @@ func organizerCompetitionsHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	return competitionsHandler(c, v, tenantDB)
+	tx := tenantDB.MustBeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+
+	err = competitionsHandler(c, v, tx)
+	if err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 func competitionsHandler(c echo.Context, v *Viewer, tenantDB dbOrTx) error {
@@ -1634,7 +1663,8 @@ func meHandler(c echo.Context) error {
 		return fmt.Errorf("error connectToTenantDB: %w", err)
 	}
 	ctx := context.Background()
-	p, err := retrievePlayer(ctx, tenantDB, v.playerID)
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	p, err := retrievePlayer(ctx, tx, v.playerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return c.JSON(http.StatusOK, SuccessResult{
@@ -1648,6 +1678,10 @@ func meHandler(c echo.Context) error {
 			})
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
