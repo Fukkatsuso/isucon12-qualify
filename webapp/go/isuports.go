@@ -1373,6 +1373,9 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	// player が失格になった可能性を考慮して、最新のデータを取得する
+	p, _ = retrievePlayer(ctx, tx, playerID)
+
 	res := SuccessResult{
 		Status: true,
 		Data: PlayerHandlerResult{
