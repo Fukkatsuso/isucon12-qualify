@@ -470,6 +470,12 @@ func retrieveCompetition(ctx context.Context, tenantDB dbOrTx, id string) (*Comp
 	return &c, nil
 }
 
+func updateCompetitionCache(id string, comp *CompetitionRow) {
+	competitionCache.mu.Lock()
+	competitionCache.data[id] = comp
+	competitionCache.mu.Unlock()
+}
+
 type PlayerScoreRow struct {
 	TenantID      int64  `db:"tenant_id"`
 	ID            string `db:"id"`
@@ -732,11 +738,13 @@ func tenantsBillingHandler(c echo.Context) error {
 				); err != nil {
 					return fmt.Errorf("failed to scan row: %w", err)
 				}
+
 				cs = append(cs, row)
 			}
 
 			for _, comp := range cs {
-				report, err := billingReportByCompetition(ctx, tx, t.ID, &comp)
+				latestComp, _ := retrieveCompetition(ctx, tx, comp.ID)
+				report, err := billingReportByCompetition(ctx, tx, t.ID, latestComp)
 				if err != nil {
 					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
 				}
@@ -1033,7 +1041,7 @@ func competitionFinishHandler(c echo.Context) error {
 	if id == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "competition_id required")
 	}
-	_, err = retrieveCompetition(ctx, tenantDB, id)
+	latestComp, err := retrieveCompetition(ctx, tenantDB, id)
 	if err != nil {
 		// 存在しない大会
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1043,16 +1051,15 @@ func competitionFinishHandler(c echo.Context) error {
 	}
 
 	now := time.Now().Unix()
-	if _, err := tenantDB.ExecContext(
-		ctx,
-		"UPDATE competition SET finished_at = ?, updated_at = ? WHERE id = ?",
-		now, now, id,
-	); err != nil {
-		return fmt.Errorf(
-			"error Update competition: finishedAt=%d, updatedAt=%d, id=%s, %w",
-			now, now, id, err,
-		)
+	updatedComp := CompetitionRow{
+		TenantID:   latestComp.TenantID,
+		ID:         id,
+		Title:      latestComp.Title,
+		FinishedAt: sql.NullInt64{Int64: now, Valid: true},
+		CreatedAt:  latestComp.CreatedAt,
+		UpdatedAt:  now,
 	}
+	updateCompetitionCache(id, &updatedComp)
 
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
@@ -1239,7 +1246,8 @@ func billingHandler(c echo.Context) error {
 	}
 	tbrs := make([]BillingReport, 0, len(cs))
 	for _, comp := range cs {
-		report, err := billingReportByCompetition(ctx, tx, v.tenantID, &comp)
+		latestComp, _ := retrieveCompetition(ctx, tx, comp.ID)
+		report, err := billingReportByCompetition(ctx, tx, v.tenantID, latestComp)
 		if err != nil {
 			return fmt.Errorf("error billingReportByCompetition: %w", err)
 		}
@@ -1564,10 +1572,11 @@ func competitionsHandler(c echo.Context, v *Viewer, tenantDB dbOrTx) error {
 	}
 	cds := make([]CompetitionDetail, 0, len(cs))
 	for _, comp := range cs {
+		latestComp, _ := retrieveCompetition(ctx, tenantDB, comp.ID)
 		cds = append(cds, CompetitionDetail{
-			ID:         comp.ID,
-			Title:      comp.Title,
-			IsFinished: comp.FinishedAt.Valid,
+			ID:         latestComp.ID,
+			Title:      latestComp.Title,
+			IsFinished: latestComp.FinishedAt.Valid,
 		})
 	}
 
