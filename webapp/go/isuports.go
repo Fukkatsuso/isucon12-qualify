@@ -586,8 +586,38 @@ type VisitHistorySummaryRow struct {
 	MinCreatedAt int64  `db:"min_created_at"`
 }
 
+type tenantAndComp struct {
+	tenantID int64
+	compID   string
+}
+
+var billingReportCache struct {
+	mu   sync.Mutex
+	data map[tenantAndComp]*BillingReport
+}
+
 // 大会ごとの課金レポートを計算する
 func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, comp *CompetitionRow) (*BillingReport, error) {
+	// 大会が終了していない場合は課金ゼロ
+	if !comp.FinishedAt.Valid {
+		return &BillingReport{
+			CompetitionID:     comp.ID,
+			CompetitionTitle:  comp.Title,
+			PlayerCount:       0,
+			VisitorCount:      0,
+			BillingPlayerYen:  0,
+			BillingVisitorYen: 0,
+			BillingYen:        0,
+		}, nil
+	}
+	// get from cache
+	billingReportCache.mu.Lock()
+	v, ok := billingReportCache.data[tenantAndComp{tenantID, comp.ID}]
+	billingReportCache.mu.Unlock()
+	if ok {
+		return v, nil
+	}
+
 	// ランキングにアクセスした参加者のIDを取得する
 	vhs := []VisitHistorySummaryRow{}
 	if err := adminDB.SelectContext(
@@ -602,7 +632,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	billingMap := map[string]string{}
 	for _, vh := range vhs {
 		// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
-		if comp.FinishedAt.Valid && comp.FinishedAt.Int64 < vh.MinCreatedAt {
+		if comp.FinishedAt.Int64 < vh.MinCreatedAt {
 			continue
 		}
 		billingMap[vh.PlayerID] = "visitor"
@@ -625,17 +655,15 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 
 	// 大会が終了している場合のみ請求金額が確定するので計算する
 	var playerCount, visitorCount int64
-	if comp.FinishedAt.Valid {
-		for _, category := range billingMap {
-			switch category {
-			case "player":
-				playerCount++
-			case "visitor":
-				visitorCount++
-			}
+	for _, category := range billingMap {
+		switch category {
+		case "player":
+			playerCount++
+		case "visitor":
+			visitorCount++
 		}
 	}
-	return &BillingReport{
+	billingReport := BillingReport{
 		CompetitionID:     comp.ID,
 		CompetitionTitle:  comp.Title,
 		PlayerCount:       playerCount,
@@ -643,7 +671,14 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
 		BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
 		BillingYen:        100*playerCount + 10*visitorCount,
-	}, nil
+	}
+
+	// set cache
+	billingReportCache.mu.Lock()
+	billingReportCache.data[tenantAndComp{tenantID, comp.ID}] = &billingReport
+	billingReportCache.mu.Unlock()
+
+	return &billingReport, nil
 }
 
 type TenantWithBilling struct {
@@ -1338,6 +1373,9 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	// player が失格になった可能性を考慮して、最新のデータを取得する
+	p, _ = retrievePlayer(ctx, tx, playerID)
+
 	res := SuccessResult{
 		Status: true,
 		Data: PlayerHandlerResult{
@@ -1702,6 +1740,13 @@ func initializeHandler(c echo.Context) error {
 		data map[string]*CompetitionRow
 	}{
 		data: make(map[string]*CompetitionRow),
+	}
+
+	billingReportCache = struct {
+		mu   sync.Mutex
+		data map[tenantAndComp]*BillingReport
+	}{
+		data: make(map[tenantAndComp]*BillingReport),
 	}
 
 	res := InitializeHandlerResult{
