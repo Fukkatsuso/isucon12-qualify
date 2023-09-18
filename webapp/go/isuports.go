@@ -741,9 +741,7 @@ func tenantsBillingHandler(c echo.Context) error {
 			}
 			defer tenantDB.Close()
 
-			tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-
-			rows, err := tx.QueryContext(ctx, "SELECT * FROM competition WHERE tenant_id=?", t.ID)
+			rows, err := tenantDB.QueryContext(ctx, "SELECT * FROM competition WHERE tenant_id=?", t.ID)
 			if err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
@@ -767,16 +765,12 @@ func tenantsBillingHandler(c echo.Context) error {
 			rows.Close()
 
 			for _, comp := range cs {
-				latestComp, _ := retrieveCompetition(ctx, tx, comp.ID)
-				report, err := billingReportByCompetition(ctx, tx, t.ID, latestComp)
+				latestComp, _ := retrieveCompetition(ctx, tenantDB, comp.ID)
+				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, latestComp)
 				if err != nil {
 					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
 				}
 				tb.BillingYen += report.BillingYen
-			}
-
-			if err = tx.Commit(); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
 			tenantBillings = append(tenantBillings, tb)
