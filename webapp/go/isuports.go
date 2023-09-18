@@ -588,6 +588,19 @@ type VisitHistorySummaryRow struct {
 
 // 大会ごとの課金レポートを計算する
 func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, comp *CompetitionRow) (*BillingReport, error) {
+	// 大会が終了していない場合は課金ゼロ
+	if !comp.FinishedAt.Valid {
+		return &BillingReport{
+			CompetitionID:     comp.ID,
+			CompetitionTitle:  comp.Title,
+			PlayerCount:       0,
+			VisitorCount:      0,
+			BillingPlayerYen:  0,
+			BillingVisitorYen: 0,
+			BillingYen:        0,
+		}, nil
+	}
+
 	// ランキングにアクセスした参加者のIDを取得する
 	vhs := []VisitHistorySummaryRow{}
 	if err := adminDB.SelectContext(
@@ -602,7 +615,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	billingMap := map[string]string{}
 	for _, vh := range vhs {
 		// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
-		if comp.FinishedAt.Valid && comp.FinishedAt.Int64 < vh.MinCreatedAt {
+		if comp.FinishedAt.Int64 < vh.MinCreatedAt {
 			continue
 		}
 		billingMap[vh.PlayerID] = "visitor"
@@ -625,14 +638,12 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 
 	// 大会が終了している場合のみ請求金額が確定するので計算する
 	var playerCount, visitorCount int64
-	if comp.FinishedAt.Valid {
-		for _, category := range billingMap {
-			switch category {
-			case "player":
-				playerCount++
-			case "visitor":
-				visitorCount++
-			}
+	for _, category := range billingMap {
+		switch category {
+		case "player":
+			playerCount++
+		case "visitor":
+			visitorCount++
 		}
 	}
 	return &BillingReport{
