@@ -741,31 +741,16 @@ func tenantsBillingHandler(c echo.Context) error {
 			}
 			defer tenantDB.Close()
 
-			rows, err := tenantDB.QueryContext(ctx, "SELECT * FROM competition WHERE tenant_id=?", t.ID)
+			ids := []struct {
+				ID string `db:"id"`
+			}{}
+			err = tenantDB.SelectContext(ctx, &ids, "SELECT id FROM competition WHERE tenant_id=?", t.ID)
 			if err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
-			cs := []CompetitionRow{}
-			for rows.Next() {
-				var row CompetitionRow
-				if err = rows.Scan(
-					&row.ID,
-					&row.TenantID,
-					&row.Title,
-					&row.FinishedAt,
-					&row.CreatedAt,
-					&row.UpdatedAt,
-				); err != nil {
-					rows.Close()
-					return fmt.Errorf("failed to scan row: %w", err)
-				}
 
-				cs = append(cs, row)
-			}
-			rows.Close()
-
-			for _, comp := range cs {
-				latestComp, _ := retrieveCompetition(ctx, tenantDB, comp.ID)
+			for _, id := range ids {
+				latestComp, _ := retrieveCompetition(ctx, tenantDB, id.ID)
 				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, latestComp)
 				if err != nil {
 					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
