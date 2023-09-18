@@ -105,30 +105,40 @@ func createTenantDB(id int64) error {
 	return nil
 }
 
+var dispenseIDMaster struct {
+	mu sync.Mutex
+	id int64
+}
+
 // システム全体で一意なIDを生成する
 func dispenseID(ctx context.Context) (string, error) {
-	var id int64
-	var lastErr error
-	for i := 0; i < 100; i++ {
-		var ret sql.Result
-		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
-				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-				continue
-			}
-			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-		}
-		id, err = ret.LastInsertId()
-		if err != nil {
-			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
-		}
-		break
-	}
-	if id != 0 {
-		return fmt.Sprintf("%x", id), nil
-	}
-	return "", lastErr
+	dispenseIDMaster.mu.Lock()
+	defer dispenseIDMaster.mu.Unlock()
+
+	dispenseIDMaster.id++
+	return fmt.Sprintf("%x", dispenseIDMaster.id), nil
+	// var id int64
+	// var lastErr error
+	// for i := 0; i < 100; i++ {
+	// 	var ret sql.Result
+	// 	ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
+	// 	if err != nil {
+	// 		if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
+	// 			lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+	// 			continue
+	// 		}
+	// 		return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+	// 	}
+	// 	id, err = ret.LastInsertId()
+	// 	if err != nil {
+	// 		return "", fmt.Errorf("error ret.LastInsertId: %w", err)
+	// 	}
+	// 	break
+	// }
+	// if id != 0 {
+	// 	return fmt.Sprintf("%x", id), nil
+	// }
+	// return "", lastErr
 }
 
 // 全APIにCache-Control: privateを設定する
@@ -1727,6 +1737,10 @@ func initializeHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
+
+	dispenseIDMaster.mu.Lock()
+	dispenseIDMaster.id = 2678400000
+	dispenseIDMaster.mu.Unlock()
 
 	playerCache = struct {
 		mu   sync.Mutex
