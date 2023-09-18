@@ -1694,6 +1694,13 @@ func initializeHandler(c echo.Context) error {
 		data: make(map[string]*PlayerRow),
 	}
 
+	competitionCache = struct {
+		mu   sync.Mutex
+		data map[string]*CompetitionRow
+	}{
+		data: make(map[string]*CompetitionRow),
+	}
+
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
