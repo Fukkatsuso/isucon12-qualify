@@ -77,10 +77,17 @@ func tenantDBPath(id int64) string {
 	return filepath.Join(tenantDBDir, fmt.Sprintf("%d.db", id))
 }
 
+type SQLiteMode string
+
+const (
+	SQLiteModeReadOnly  SQLiteMode = "ro"
+	SQLiteModeReadWrite SQLiteMode = "rw"
+)
+
 // テナントDBに接続する
-func connectToTenantDB(id int64) (*sqlx.DB, error) {
+func connectToTenantDB(id int64, mode SQLiteMode) (*sqlx.DB, error) {
 	p := tenantDBPath(id)
-	db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?mode=rw", p))
+	db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?mode=%s", p, mode))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tenant DB: %w", err)
 	}
@@ -680,7 +687,7 @@ func tenantsBillingHandler(c echo.Context) error {
 				Name:        t.Name,
 				DisplayName: t.DisplayName,
 			}
-			tenantDB, err := connectToTenantDB(t.ID)
+			tenantDB, err := connectToTenantDB(t.ID, SQLiteModeReadOnly)
 			if err != nil {
 				return fmt.Errorf("failed to connectToTenantDB: %w", err)
 			}
@@ -758,7 +765,7 @@ func playersListHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return fmt.Errorf("error connectToTenantDB: %w", err)
 	}
@@ -805,7 +812,7 @@ func playersAddHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadWrite)
 	if err != nil {
 		return err
 	}
@@ -875,7 +882,7 @@ func playerDisqualifiedHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return err
 	}
@@ -950,7 +957,7 @@ func competitionsAddHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadWrite)
 	if err != nil {
 		return err
 	}
@@ -997,7 +1004,7 @@ func competitionFinishHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadWrite)
 	if err != nil {
 		return err
 	}
@@ -1048,7 +1055,7 @@ func competitionScoreHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadWrite)
 	if err != nil {
 		return err
 	}
@@ -1194,7 +1201,7 @@ func billingHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return err
 	}
@@ -1257,7 +1264,7 @@ func playerHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role player required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return err
 	}
@@ -1350,7 +1357,7 @@ func competitionRankingHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role player required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadWrite)
 	if err != nil {
 		return err
 	}
@@ -1491,7 +1498,7 @@ func playerCompetitionsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role player required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return err
 	}
@@ -1515,7 +1522,7 @@ func organizerCompetitionsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return err
 	}
@@ -1606,7 +1613,7 @@ func meHandler(c echo.Context) error {
 		})
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return fmt.Errorf("error connectToTenantDB: %w", err)
 	}
