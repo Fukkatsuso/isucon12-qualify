@@ -1029,7 +1029,8 @@ func competitionsAddHandler(c echo.Context) error {
 		)
 	}
 	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		tx.Rollback()
+		return c.JSON(http.StatusTooManyRequests, FailureResult{Status: false, Message: err.Error()})
 	}
 
 	res := CompetitionsAddHandlerResult{
