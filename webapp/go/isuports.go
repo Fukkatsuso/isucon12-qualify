@@ -586,6 +586,16 @@ type VisitHistorySummaryRow struct {
 	MinCreatedAt int64  `db:"min_created_at"`
 }
 
+type tenantAndComp struct {
+	tenantID int64
+	compID   string
+}
+
+var billingReportCache struct {
+	mu   sync.Mutex
+	data map[tenantAndComp]*BillingReport
+}
+
 // 大会ごとの課金レポートを計算する
 func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, comp *CompetitionRow) (*BillingReport, error) {
 	// 大会が終了していない場合は課金ゼロ
@@ -599,6 +609,13 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			BillingVisitorYen: 0,
 			BillingYen:        0,
 		}, nil
+	}
+	// get from cache
+	billingReportCache.mu.Lock()
+	v, ok := billingReportCache.data[tenantAndComp{tenantID, comp.ID}]
+	billingReportCache.mu.Unlock()
+	if ok {
+		return v, nil
 	}
 
 	// ランキングにアクセスした参加者のIDを取得する
@@ -646,7 +663,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			visitorCount++
 		}
 	}
-	return &BillingReport{
+	billingReport := BillingReport{
 		CompetitionID:     comp.ID,
 		CompetitionTitle:  comp.Title,
 		PlayerCount:       playerCount,
@@ -654,7 +671,14 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
 		BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
 		BillingYen:        100*playerCount + 10*visitorCount,
-	}, nil
+	}
+
+	// set cache
+	billingReportCache.mu.Lock()
+	billingReportCache.data[tenantAndComp{tenantID, comp.ID}] = &billingReport
+	billingReportCache.mu.Unlock()
+
+	return &billingReport, nil
 }
 
 type TenantWithBilling struct {
@@ -1713,6 +1737,13 @@ func initializeHandler(c echo.Context) error {
 		data map[string]*CompetitionRow
 	}{
 		data: make(map[string]*CompetitionRow),
+	}
+
+	billingReportCache = struct {
+		mu   sync.Mutex
+		data map[tenantAndComp]*BillingReport
+	}{
+		data: make(map[tenantAndComp]*BillingReport),
 	}
 
 	res := InitializeHandlerResult{
