@@ -1022,15 +1022,20 @@ func competitionsAddHandler(c echo.Context) error {
 		return fmt.Errorf("error dispenseID: %w", err)
 	}
 
-	if _, err := tenantDB.ExecContext(
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	if _, err := tx.ExecContext(
 		ctx,
 		"INSERT INTO competition (id, tenant_id, title, finished_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
 		id, v.tenantID, title, sql.NullInt64{}, now, now,
 	); err != nil {
+		tx.Rollback()
 		return fmt.Errorf(
 			"error Insert competition: id=%s, tenant_id=%d, title=%s, finishedAt=null, createdAt=%d, updatedAt=%d, %w",
 			id, v.tenantID, title, now, now, err,
 		)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	res := CompetitionsAddHandlerResult{
@@ -1111,14 +1116,11 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
-	defer tx.Rollback()
-
 	competitionID := c.Param("competition_id")
 	if competitionID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "competition_id required")
 	}
-	comp, err := retrieveCompetition(ctx, tx, competitionID)
+	comp, err := retrieveCompetition(ctx, tenantDB, competitionID)
 	if err != nil {
 		// 存在しない大会
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1168,7 +1170,7 @@ func competitionScoreHandler(c echo.Context) error {
 			return fmt.Errorf("row must have two columns: %#v", row)
 		}
 		playerID, scoreStr := row[0], row[1]
-		if _, err := retrievePlayer(ctx, tx, playerID); err != nil {
+		if _, err := retrievePlayer(ctx, tenantDB, playerID); err != nil {
 			// 存在しない参加者が含まれている
 			if errors.Is(err, sql.ErrNoRows) {
 				return echo.NewHTTPError(
@@ -1202,12 +1204,15 @@ func competitionScoreHandler(c echo.Context) error {
 		})
 	}
 
+	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+
 	if _, err := tx.ExecContext(
 		ctx,
 		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
 		v.tenantID,
 		competitionID,
 	); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 
@@ -1215,6 +1220,7 @@ func competitionScoreHandler(c echo.Context) error {
 		ctx,
 		"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
 		playerScoreRows); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("error Insert player_score")
 	}
 
@@ -1251,10 +1257,8 @@ func billingHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-
 	cs := []CompetitionRow{}
-	if err := tx.SelectContext(
+	if err := tenantDB.SelectContext(
 		ctx,
 		&cs,
 		"SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
@@ -1264,16 +1268,12 @@ func billingHandler(c echo.Context) error {
 	}
 	tbrs := make([]BillingReport, 0, len(cs))
 	for _, comp := range cs {
-		latestComp, _ := retrieveCompetition(ctx, tx, comp.ID)
-		report, err := billingReportByCompetition(ctx, tx, v.tenantID, latestComp)
+		latestComp, _ := retrieveCompetition(ctx, tenantDB, comp.ID)
+		report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, latestComp)
 		if err != nil {
 			return fmt.Errorf("error billingReportByCompetition: %w", err)
 		}
 		tbrs = append(tbrs, *report)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	res := SuccessResult{
@@ -1315,9 +1315,7 @@ func playerHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-
-	if err := authorizePlayer(ctx, tx, v.playerID); err != nil {
+	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
 		return err
 	}
 
@@ -1325,7 +1323,7 @@ func playerHandler(c echo.Context) error {
 	if playerID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "player_id is required")
 	}
-	p, err := retrievePlayer(ctx, tx, playerID)
+	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusNotFound, "player not found")
@@ -1354,16 +1352,12 @@ func playerHandler(c echo.Context) error {
 		ORDER BY
 			competition.created_at ASC
 	`
-	if err := tx.SelectContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := tenantDB.SelectContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
 	}
 
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
 	// player が失格になった可能性を考慮して、最新のデータを取得する
-	p, _ = retrievePlayer(ctx, tx, playerID)
+	p, _ = retrievePlayer(ctx, tenantDB, playerID)
 
 	res := SuccessResult{
 		Status: true,
@@ -1411,10 +1405,7 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 	defer tenantDB.Close()
 
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
-	defer tx.Rollback()
-
-	if err := authorizePlayer(ctx, tx, v.playerID); err != nil {
+	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
 		return err
 	}
 
@@ -1424,7 +1415,7 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	// 大会の存在確認
-	competition, err := retrieveCompetition(ctx, tx, competitionID)
+	competition, err := retrieveCompetition(ctx, tenantDB, competitionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return echo.NewHTTPError(http.StatusNotFound, "competition not found")
@@ -1458,7 +1449,7 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	pss := []PlayerScoreRow{}
-	if err := tx.SelectContext(
+	if err := tenantDB.SelectContext(
 		ctx,
 		&pss,
 		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
@@ -1476,7 +1467,7 @@ func competitionRankingHandler(c echo.Context) error {
 			continue
 		}
 		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tx, ps.PlayerID)
+		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
 		if err != nil {
 			return fmt.Errorf("error retrievePlayer: %w", err)
 		}
@@ -1486,10 +1477,6 @@ func competitionRankingHandler(c echo.Context) error {
 			PlayerDisplayName: p.DisplayName,
 			RowNum:            ps.RowNum,
 		})
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	sort.Slice(ranks, func(i, j int) bool {
@@ -1669,8 +1656,7 @@ func meHandler(c echo.Context) error {
 	defer tenantDB.Close()
 
 	ctx := context.Background()
-	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	p, err := retrievePlayer(ctx, tx, v.playerID)
+	p, err := retrievePlayer(ctx, tenantDB, v.playerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return c.JSON(http.StatusOK, SuccessResult{
@@ -1684,10 +1670,6 @@ func meHandler(c echo.Context) error {
 			})
 		}
 		return fmt.Errorf("error retrievePlayer: %w", err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
