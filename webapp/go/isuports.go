@@ -747,7 +747,6 @@ func tenantsBillingHandler(c echo.Context) error {
 			if err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
-			defer rows.Close()
 			cs := []CompetitionRow{}
 			for rows.Next() {
 				var row CompetitionRow
@@ -759,11 +758,13 @@ func tenantsBillingHandler(c echo.Context) error {
 					&row.CreatedAt,
 					&row.UpdatedAt,
 				); err != nil {
+					rows.Close()
 					return fmt.Errorf("failed to scan row: %w", err)
 				}
 
 				cs = append(cs, row)
 			}
+			rows.Close()
 
 			for _, comp := range cs {
 				latestComp, _ := retrieveCompetition(ctx, tx, comp.ID)
@@ -1665,6 +1666,8 @@ func meHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error connectToTenantDB: %w", err)
 	}
+	defer tenantDB.Close()
+
 	ctx := context.Background()
 	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	p, err := retrievePlayer(ctx, tx, v.playerID)
