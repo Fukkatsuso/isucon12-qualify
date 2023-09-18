@@ -442,12 +442,31 @@ type CompetitionRow struct {
 	UpdatedAt  int64         `db:"updated_at"`
 }
 
+var competitionCache struct {
+	mu   sync.Mutex
+	data map[string]*CompetitionRow
+}
+
 // 大会を取得する
 func retrieveCompetition(ctx context.Context, tenantDB dbOrTx, id string) (*CompetitionRow, error) {
+	// get from cache
+	competitionCache.mu.Lock()
+	v, ok := competitionCache.data[id]
+	competitionCache.mu.Unlock()
+	if ok {
+		return v, nil
+	}
+
 	var c CompetitionRow
 	if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
 	}
+
+	// set cache
+	competitionCache.mu.Lock()
+	competitionCache.data[id] = &c
+	competitionCache.mu.Unlock()
+
 	return &c, nil
 }
 
