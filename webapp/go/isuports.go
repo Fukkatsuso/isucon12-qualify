@@ -475,6 +475,8 @@ type PlayerScoreRow struct {
 	UpdatedAt     int64  `db:"updated_at"`
 }
 
+var playerScoreMutex sync.RWMutex
+
 type TenantsAddHandlerResult struct {
 	Tenant TenantWithBilling `json:"tenant"`
 }
@@ -627,6 +629,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	}
 
 	// スコアを登録した参加者のIDを取得する
+	playerScoreMutex.RLock()
 	scoredPlayerIDs := []string{}
 	if err := tenantDB.SelectContext(
 		ctx,
@@ -634,8 +637,10 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
 		tenantID, comp.ID,
 	); err != nil && err != sql.ErrNoRows {
+		playerScoreMutex.RUnlock()
 		return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 	}
+	playerScoreMutex.RUnlock()
 	for _, pid := range scoredPlayerIDs {
 		// スコアが登録されている参加者
 		billingMap[pid] = "player"
@@ -1188,6 +1193,8 @@ func competitionScoreHandler(c echo.Context) error {
 
 	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
 
+	playerScoreMutex.Lock()
+	defer playerScoreMutex.Unlock()
 	if _, err := tx.ExecContext(
 		ctx,
 		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
@@ -1430,6 +1437,7 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
+	playerScoreMutex.RLock()
 	pss := []PlayerScoreRow{}
 	if err := tenantDB.SelectContext(
 		ctx,
@@ -1438,8 +1446,10 @@ func competitionRankingHandler(c echo.Context) error {
 		tenant.ID,
 		competitionID,
 	); err != nil {
+		playerScoreMutex.Unlock()
 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
 	}
+	playerScoreMutex.Unlock()
 	ranks := make([]CompetitionRank, 0, len(pss))
 	scoredPlayerSet := make(map[string]struct{}, len(pss))
 	for _, ps := range pss {
