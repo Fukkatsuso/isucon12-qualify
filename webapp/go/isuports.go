@@ -1372,6 +1372,9 @@ var rankCache struct {
 }
 
 func updateRanks(tenantID int64, compID string) {
+	rankCache.mu.Lock()
+	defer rankCache.mu.Unlock()
+
 	tenantDB, _ := connectToTenantDB(tenantID, SQLiteModeReadOnly)
 	defer tenantDB.Close()
 
@@ -1415,8 +1418,6 @@ func updateRanks(tenantID int64, compID string) {
 		return ranks[i].Score > ranks[j].Score
 	})
 
-	rankCache.mu.Lock()
-	defer rankCache.mu.Unlock()
 	rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}] = ranks
 }
 
