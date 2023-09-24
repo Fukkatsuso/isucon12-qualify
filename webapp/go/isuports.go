@@ -1210,6 +1210,9 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	// ランキングを更新しておく
+	go updateRanks(v.tenantID, competitionID)
+
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
 		Data:   ScoreHandlerResult{Rows: int64(len(playerScoreRows))},
@@ -1363,6 +1366,88 @@ type CompetitionRank struct {
 	RowNum            int64  `json:"-"` // APIレスポンスのJSONには含まれない
 }
 
+var rankCache struct {
+	mu   sync.Mutex
+	data map[tenantAndComp][]CompetitionRank
+}
+
+func updateRanks(tenantID int64, compID string) {
+	rankCache.mu.Lock()
+	defer rankCache.mu.Unlock()
+
+	tenantDB, _ := connectToTenantDB(tenantID, SQLiteModeReadOnly)
+	defer tenantDB.Close()
+
+	ctx := context.Background()
+	pss := []PlayerScoreRow{}
+	if err := tenantDB.SelectContext(
+		ctx,
+		&pss,
+		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
+		tenantID,
+		compID,
+	); err != nil {
+		fmt.Println("updateRanks:", err)
+		// return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
+	}
+	ranks := make([]CompetitionRank, 0, len(pss))
+	scoredPlayerSet := make(map[string]struct{}, len(pss))
+	for _, ps := range pss {
+		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
+		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
+		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
+			continue
+		}
+		scoredPlayerSet[ps.PlayerID] = struct{}{}
+		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
+		if err != nil {
+			fmt.Println("retrievePlayer:", err)
+		}
+		ranks = append(ranks, CompetitionRank{
+			Score:             ps.Score,
+			PlayerID:          p.ID,
+			PlayerDisplayName: p.DisplayName,
+			RowNum:            ps.RowNum,
+		})
+	}
+
+	sort.Slice(ranks, func(i, j int) bool {
+		if ranks[i].Score == ranks[j].Score {
+			return ranks[i].RowNum < ranks[j].RowNum
+		}
+		return ranks[i].Score > ranks[j].Score
+	})
+
+	rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}] = ranks
+}
+
+func getPagedRanks(tenantID int64, compID string, rankAfter int64) []CompetitionRank {
+	rankCache.mu.Lock()
+	defer rankCache.mu.Unlock()
+
+	ranks := rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}]
+	if ranks == nil {
+		return []CompetitionRank{}
+	}
+
+	pagedRanks := make([]CompetitionRank, 0, 100)
+	for i, rank := range ranks {
+		if int64(i) < rankAfter {
+			continue
+		}
+		pagedRanks = append(pagedRanks, CompetitionRank{
+			Rank:              int64(i + 1),
+			Score:             rank.Score,
+			PlayerID:          rank.PlayerID,
+			PlayerDisplayName: rank.PlayerDisplayName,
+		})
+		if len(pagedRanks) >= 100 {
+			break
+		}
+	}
+	return pagedRanks
+}
+
 type CompetitionRankingHandlerResult struct {
 	Competition CompetitionDetail `json:"competition"`
 	Ranks       []CompetitionRank `json:"ranks"`
@@ -1430,58 +1515,7 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
-	pss := []PlayerScoreRow{}
-	if err := tenantDB.SelectContext(
-		ctx,
-		&pss,
-		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
-		tenant.ID,
-		competitionID,
-	); err != nil {
-		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
-	}
-	ranks := make([]CompetitionRank, 0, len(pss))
-	scoredPlayerSet := make(map[string]struct{}, len(pss))
-	for _, ps := range pss {
-		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
-		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
-			continue
-		}
-		scoredPlayerSet[ps.PlayerID] = struct{}{}
-		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
-		if err != nil {
-			return fmt.Errorf("error retrievePlayer: %w", err)
-		}
-		ranks = append(ranks, CompetitionRank{
-			Score:             ps.Score,
-			PlayerID:          p.ID,
-			PlayerDisplayName: p.DisplayName,
-			RowNum:            ps.RowNum,
-		})
-	}
-
-	sort.Slice(ranks, func(i, j int) bool {
-		if ranks[i].Score == ranks[j].Score {
-			return ranks[i].RowNum < ranks[j].RowNum
-		}
-		return ranks[i].Score > ranks[j].Score
-	})
-	pagedRanks := make([]CompetitionRank, 0, 100)
-	for i, rank := range ranks {
-		if int64(i) < rankAfter {
-			continue
-		}
-		pagedRanks = append(pagedRanks, CompetitionRank{
-			Rank:              int64(i + 1),
-			Score:             rank.Score,
-			PlayerID:          rank.PlayerID,
-			PlayerDisplayName: rank.PlayerDisplayName,
-		})
-		if len(pagedRanks) >= 100 {
-			break
-		}
-	}
+	pagedRanks := getPagedRanks(v.tenantID, competitionID, rankAfter)
 
 	res := SuccessResult{
 		Status: true,
@@ -1706,6 +1740,13 @@ func initializeHandler(c echo.Context) error {
 		data map[tenantAndComp]*BillingReport
 	}{
 		data: make(map[tenantAndComp]*BillingReport),
+	}
+
+	rankCache = struct {
+		mu   sync.Mutex
+		data map[tenantAndComp][]CompetitionRank
+	}{
+		data: make(map[tenantAndComp][]CompetitionRank),
 	}
 
 	res := InitializeHandlerResult{
