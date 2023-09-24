@@ -1714,28 +1714,28 @@ func initializeHandler(c echo.Context) error {
 		mu   sync.Mutex
 		data map[string]*PlayerRow
 	}{
-		data: make(map[string]*PlayerRow),
+		data: make(map[string]*PlayerRow, 1000000),
 	}
 
 	competitionCache = struct {
 		mu   sync.Mutex
 		data map[string]*CompetitionRow
 	}{
-		data: make(map[string]*CompetitionRow),
+		data: make(map[string]*CompetitionRow, 100000),
 	}
 
 	billingReportCache = struct {
 		mu   sync.Mutex
 		data map[tenantAndComp]*BillingReport
 	}{
-		data: make(map[tenantAndComp]*BillingReport),
+		data: make(map[tenantAndComp]*BillingReport, 100*1000),
 	}
 
 	rankCache = struct {
 		mu   sync.Mutex
 		data map[tenantAndComp][]CompetitionRank
 	}{
-		data: make(map[tenantAndComp][]CompetitionRank),
+		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
 	}
 
 	res := InitializeHandlerResult{
