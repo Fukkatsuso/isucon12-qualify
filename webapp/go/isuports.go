@@ -1141,7 +1141,6 @@ func competitionScoreHandler(c echo.Context) error {
 	playerScoreMap := map[string]PlayerScoreRow{}
 	var rowNum int64
 	for {
-		rowNum++
 		row, err := r.Read()
 		if err != nil {
 			if err == io.EOF {
@@ -1174,6 +1173,7 @@ func competitionScoreHandler(c echo.Context) error {
 		if err != nil {
 			return fmt.Errorf("error dispenseID: %w", err)
 		}
+		rowNum++
 		now := time.Now().Unix()
 		playerScoreMap[playerID] = PlayerScoreRow{
 			ID:            id,
