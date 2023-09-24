@@ -813,10 +813,11 @@ func playersListHandler(c echo.Context) error {
 
 	var pds []PlayerDetail
 	for _, p := range pls {
+		playerLatest, _ := retrievePlayer(ctx, tenantDB, p.ID)
 		pds = append(pds, PlayerDetail{
 			ID:             p.ID,
 			DisplayName:    p.DisplayName,
-			IsDisqualified: p.IsDisqualified,
+			IsDisqualified: playerLatest.IsDisqualified,
 		})
 	}
 
