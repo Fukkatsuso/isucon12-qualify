@@ -1137,10 +1137,10 @@ func competitionScoreHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid CSV headers")
 	}
 
+	// 最新の（最大の rowNum を持つ）スコアだけ記録すれば良い
+	playerScoreMap := map[string]PlayerScoreRow{}
 	var rowNum int64
-	playerScoreRows := []PlayerScoreRow{}
 	for {
-		rowNum++
 		row, err := r.Read()
 		if err != nil {
 			if err == io.EOF {
@@ -1173,8 +1173,9 @@ func competitionScoreHandler(c echo.Context) error {
 		if err != nil {
 			return fmt.Errorf("error dispenseID: %w", err)
 		}
+		rowNum++
 		now := time.Now().Unix()
-		playerScoreRows = append(playerScoreRows, PlayerScoreRow{
+		playerScoreMap[playerID] = PlayerScoreRow{
 			ID:            id,
 			TenantID:      v.tenantID,
 			PlayerID:      playerID,
@@ -1183,7 +1184,13 @@ func competitionScoreHandler(c echo.Context) error {
 			RowNum:        rowNum,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		})
+		}
+	}
+
+	// map -> slice
+	playerScoreRows := make([]PlayerScoreRow, 0, len(playerScoreMap))
+	for _, row := range playerScoreMap {
+		playerScoreRows = append(playerScoreRows, row)
 	}
 
 	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
@@ -1211,11 +1218,11 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 
 	// ランキングを更新しておく
-	go updateRanks(v.tenantID, competitionID)
+	go updateRanks(v.tenantID, competitionID, playerScoreRows)
 
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
-		Data:   ScoreHandlerResult{Rows: int64(len(playerScoreRows))},
+		Data:   ScoreHandlerResult{Rows: rowNum},
 	})
 }
 
@@ -1371,7 +1378,7 @@ var rankCache struct {
 	data map[tenantAndComp][]CompetitionRank
 }
 
-func updateRanks(tenantID int64, compID string) {
+func updateRanks(tenantID int64, compID string, scores []PlayerScoreRow) {
 	rankCache.mu.Lock()
 	defer rankCache.mu.Unlock()
 
@@ -1379,26 +1386,8 @@ func updateRanks(tenantID int64, compID string) {
 	defer tenantDB.Close()
 
 	ctx := context.Background()
-	pss := []PlayerScoreRow{}
-	if err := tenantDB.SelectContext(
-		ctx,
-		&pss,
-		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? ORDER BY row_num DESC",
-		tenantID,
-		compID,
-	); err != nil {
-		fmt.Println("updateRanks:", err)
-		// return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
-	}
-	ranks := make([]CompetitionRank, 0, len(pss))
-	scoredPlayerSet := make(map[string]struct{}, len(pss))
-	for _, ps := range pss {
-		// player_scoreが同一player_id内ではrow_numの降順でソートされているので
-		// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
-		if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
-			continue
-		}
-		scoredPlayerSet[ps.PlayerID] = struct{}{}
+	ranks := make([]CompetitionRank, 0, len(scores))
+	for _, ps := range scores {
 		p, err := retrievePlayer(ctx, tenantDB, ps.PlayerID)
 		if err != nil {
 			fmt.Println("retrievePlayer:", err)
@@ -1725,28 +1714,28 @@ func initializeHandler(c echo.Context) error {
 		mu   sync.Mutex
 		data map[string]*PlayerRow
 	}{
-		data: make(map[string]*PlayerRow),
+		data: make(map[string]*PlayerRow, 1000000),
 	}
 
 	competitionCache = struct {
 		mu   sync.Mutex
 		data map[string]*CompetitionRow
 	}{
-		data: make(map[string]*CompetitionRow),
+		data: make(map[string]*CompetitionRow, 100000),
 	}
 
 	billingReportCache = struct {
 		mu   sync.Mutex
 		data map[tenantAndComp]*BillingReport
 	}{
-		data: make(map[tenantAndComp]*BillingReport),
+		data: make(map[tenantAndComp]*BillingReport, 100*1000),
 	}
 
 	rankCache = struct {
 		mu   sync.Mutex
 		data map[tenantAndComp][]CompetitionRank
 	}{
-		data: make(map[tenantAndComp][]CompetitionRank),
+		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
 	}
 
 	res := InitializeHandlerResult{
