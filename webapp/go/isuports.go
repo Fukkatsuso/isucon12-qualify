@@ -1772,8 +1772,14 @@ func initializeHandler(c echo.Context) error {
 		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
 	}
 
-	ctx := context.Background()
 	scores := make(map[string][]PlayerScoreDetail, 1000000)
+	playerScoreDetailCache = struct {
+		mu   sync.RWMutex
+		data map[string][]PlayerScoreDetail
+	}{
+		data: scores,
+	}
+	ctx := context.Background()
 	// 全テナント取得
 	var tenants []TenantRow
 	if err := adminDB.SelectContext(
@@ -1796,12 +1802,6 @@ func initializeHandler(c echo.Context) error {
 			ids = append(ids, p.ID)
 		}
 		updatePlayerScoreDetail(tenant.ID, ids)
-	}
-	playerScoreDetailCache = struct {
-		mu   sync.RWMutex
-		data map[string][]PlayerScoreDetail
-	}{
-		data: scores,
 	}
 
 	res := InitializeHandlerResult{
