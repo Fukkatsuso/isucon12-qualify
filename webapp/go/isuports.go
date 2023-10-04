@@ -1217,15 +1217,6 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// player スコアを更新しておく
-	go func() {
-		playerIDs := make([]string, 0, len(playerScoreRows))
-		for _, ps := range playerScoreRows {
-			playerIDs = append(playerIDs, ps.PlayerID)
-		}
-		updatePlayerScoreDetail(v.tenantID, playerIDs)
-	}()
-
 	// ランキングを更新しておく
 	go updateRanks(v.tenantID, competitionID, playerScoreRows)
 
@@ -1287,59 +1278,9 @@ func billingHandler(c echo.Context) error {
 }
 
 type PlayerScoreDetail struct {
-	CompetitionTitle string `json:"competition_title" db:"competition_title"`
-	Score            int64  `json:"score" db:"score"`
-}
-
-var playerScoreDetailCache struct {
-	mu   sync.RWMutex
-	data map[string][]PlayerScoreDetail
-}
-
-func getPlayerScoreDetail(playerID string) []PlayerScoreDetail {
-	playerScoreDetailCache.mu.RLock()
-	defer playerScoreDetailCache.mu.RUnlock()
-
-	return playerScoreDetailCache.data[playerID]
-}
-
-func setPlayerScoreDetail(playerID string, scores []PlayerScoreDetail) {
-	playerScoreDetailCache.mu.Lock()
-	defer playerScoreDetailCache.mu.Unlock()
-
-	playerScoreDetailCache.data[playerID] = scores
-}
-
-func updatePlayerScoreDetail(tenantID int64, playerIDs []string) {
-	tenantDB, _ := connectToTenantDB(tenantID, SQLiteModeReadOnly)
-	defer tenantDB.Close()
-	for _, playerID := range playerIDs {
-		psds := []PlayerScoreDetail{}
-		query := `
-			SELECT
-				competition.title AS competition_title,
-				p.score AS score
-			FROM
-				competition
-			LEFT JOIN
-				player_score p ON p.id = (
-					SELECT id
-					FROM player_score
-					WHERE player_id = ? AND competition_id = competition.id
-					ORDER BY row_num DESC
-					LIMIT 1
-				)
-			WHERE
-				competition.tenant_id = ? AND
-				p.id IS NOT NULL
-			ORDER BY
-				competition.created_at ASC
-		`
-		if err := tenantDB.Select(&psds, query, playerID, tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			fmt.Printf("error Select player_score: tenantID=%d, playerID=%s, %s\n", tenantID, playerID, err)
-		}
-		setPlayerScoreDetail(playerID, psds)
-	}
+	competitionCreatedAt int64  `json:"-"`
+	CompetitionTitle     string `json:"competition_title" db:"competition_title"`
+	Score                int64  `json:"score" db:"score"`
 }
 
 type PlayerHandlerResult struct {
@@ -1383,7 +1324,37 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	scores := getPlayerScoreDetail(playerID)
+	query := `
+		SELECT
+			score,
+			competition_id
+		FROM
+			player_score
+		WHERE
+			player_id = ? AND competition_id = ?
+	`
+	rows, err := tenantDB.QueryContext(ctx, query)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, playerID, err)
+	}
+	defer rows.Close()
+	psds := make([]PlayerScoreDetail, 0, 1000)
+	for rows.Next() {
+		var score int64
+		var compID string
+		if err := rows.Scan(&score, &compID); err != nil {
+			return fmt.Errorf("error Scan player_score: %w", err)
+		}
+		comp, _ := retrieveCompetition(ctx, tenantDB, compID)
+		psds = append(psds, PlayerScoreDetail{
+			competitionCreatedAt: comp.CreatedAt,
+			CompetitionTitle:     comp.Title,
+			Score:                score,
+		})
+	}
+	sort.Slice(psds, func(i, j int) bool {
+		return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
+	})
 
 	res := SuccessResult{
 		Status: true,
@@ -1393,7 +1364,7 @@ func playerHandler(c echo.Context) error {
 				DisplayName:    p.DisplayName,
 				IsDisqualified: p.IsDisqualified,
 			},
-			Scores: scores,
+			Scores: psds,
 		},
 	}
 	return c.JSON(http.StatusOK, res)
@@ -1740,6 +1711,44 @@ func initializeHandler(c echo.Context) error {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
 
+	// 不要な player_score を消去
+	// 全テナント取得
+	ctx := context.Background()
+	var tenants []TenantRow
+	if err := adminDB.SelectContext(
+		ctx,
+		&tenants,
+		"SELECT * FROM tenant",
+	); err != nil {
+		return fmt.Errorf("failed to Select tenants: %w", err)
+	}
+	// テナントごとに不要な player_score 削除
+	wg := sync.WaitGroup{}
+	for _, tenant := range tenants {
+		wg.Add(1)
+		go func(tenant TenantRow) {
+			defer wg.Done()
+			tenantDB, _ := connectToTenantDB(tenant.ID, SQLiteModeReadWrite)
+			defer tenantDB.Close()
+
+			// ある competition のある player について、
+			// 最新（row_num が最大）ではないスコア
+			// を削除
+			if _, err := tenantDB.ExecContext(
+				ctx,
+				`DELETE FROM player_score
+				WHERE player_score.row_num < (
+					SELECT MAX(tmp.row_num)
+					FROM player_score AS tmp
+					WHERE player_score.player_id = tmp.player_id AND player_score.competition_id = tmp.competition_id
+				)`,
+			); err != nil {
+				fmt.Printf("error Delete player_score: %s\n", err)
+			}
+		}(tenant)
+	}
+	wg.Wait()
+
 	dispenseIDMaster.mu.Lock()
 	dispenseIDMaster.id = 2678400000
 	dispenseIDMaster.mu.Unlock()
@@ -1770,38 +1779,6 @@ func initializeHandler(c echo.Context) error {
 		data map[tenantAndComp][]CompetitionRank
 	}{
 		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
-	}
-
-	scores := make(map[string][]PlayerScoreDetail, 1000000)
-	playerScoreDetailCache = struct {
-		mu   sync.RWMutex
-		data map[string][]PlayerScoreDetail
-	}{
-		data: scores,
-	}
-	ctx := context.Background()
-	// 全テナント取得
-	var tenants []TenantRow
-	if err := adminDB.SelectContext(
-		ctx,
-		&tenants,
-		"SELECT * FROM tenant",
-	); err != nil {
-		return fmt.Errorf("failed to Select tenants: %w", err)
-	}
-	// テナントごとにスコア取得
-	for _, tenant := range tenants {
-		tenantDB, _ := connectToTenantDB(tenant.ID, SQLiteModeReadOnly)
-		defer tenantDB.Close()
-		var ps []PlayerRow
-		if err := tenantDB.SelectContext(ctx, &ps, "SELECT * FROM player"); err != nil {
-			return fmt.Errorf("error Select players: %w", err)
-		}
-		ids := make([]string, 0, len(ps))
-		for _, p := range ps {
-			ids = append(ids, p.ID)
-		}
-		updatePlayerScoreDetail(tenant.ID, ids)
 	}
 
 	res := InitializeHandlerResult{
