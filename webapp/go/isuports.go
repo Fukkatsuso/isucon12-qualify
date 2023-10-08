@@ -1460,7 +1460,7 @@ func competitionRankingHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role player required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadWrite)
+	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
 	if err != nil {
 		return err
 	}
