@@ -28,6 +28,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -363,8 +364,9 @@ type TenantRow struct {
 }
 
 var tenantCache struct {
-	mu   sync.RWMutex
-	data map[string]*TenantRow
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[string]*TenantRow
 }
 
 func getTenantCache(name string) (*TenantRow, error) {
@@ -375,18 +377,25 @@ func getTenantCache(name string) (*TenantRow, error) {
 		return v, nil
 	}
 
-	var tenant TenantRow
-	if err := adminDB.GetContext(
-		context.Background(),
-		&tenant,
-		"SELECT * FROM tenant WHERE name = ?",
-		name,
-	); err != nil {
-		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", name, err)
+	vv, err, _ := tenantCache.group.Do(fmt.Sprintf("getTenantCache_%s", name), func() (interface{}, error) {
+		var tenant TenantRow
+		if err := adminDB.GetContext(
+			context.Background(),
+			&tenant,
+			"SELECT * FROM tenant WHERE name = ?",
+			name,
+		); err != nil {
+			return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", name, err)
+		}
+
+		setTenantCache(name, &tenant)
+		return tenant, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	setTenantCache(name, &tenant)
-
+	tenant := vv.(TenantRow)
 	return &tenant, nil
 }
 
@@ -1758,8 +1767,9 @@ func initializeHandler(c echo.Context) error {
 	dispenseIDMaster.mu.Unlock()
 
 	tenantCache = struct {
-		mu   sync.RWMutex
-		data map[string]*TenantRow
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[string]*TenantRow
 	}{
 		data: make(map[string]*TenantRow, 10000),
 	}
