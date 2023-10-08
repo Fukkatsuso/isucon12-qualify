@@ -1539,7 +1539,8 @@ func competitionRankingHandler(c echo.Context) error {
 	now := time.Now().Unix()
 	if _, err := adminDB.ExecContext(
 		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		`INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at)`,
 		v.playerID, tenantID, competition.ID, now, now,
 	); err != nil {
 		return fmt.Errorf(
