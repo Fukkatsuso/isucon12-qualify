@@ -1711,44 +1711,6 @@ func initializeHandler(c echo.Context) error {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
 
-	// 不要な player_score を消去
-	// 全テナント取得
-	ctx := context.Background()
-	var tenants []TenantRow
-	if err := adminDB.SelectContext(
-		ctx,
-		&tenants,
-		"SELECT * FROM tenant",
-	); err != nil {
-		return fmt.Errorf("failed to Select tenants: %w", err)
-	}
-	// テナントごとに不要な player_score 削除
-	wg := sync.WaitGroup{}
-	for _, tenant := range tenants {
-		wg.Add(1)
-		go func(tenant TenantRow) {
-			defer wg.Done()
-			tenantDB, _ := connectToTenantDB(tenant.ID, SQLiteModeReadWrite)
-			defer tenantDB.Close()
-
-			// ある competition のある player について、
-			// 最新（row_num が最大）ではないスコア
-			// を削除
-			if _, err := tenantDB.ExecContext(
-				ctx,
-				`DELETE FROM player_score
-				WHERE player_score.row_num < (
-					SELECT MAX(tmp.row_num)
-					FROM player_score AS tmp
-					WHERE player_score.player_id = tmp.player_id AND player_score.competition_id = tmp.competition_id
-				)`,
-			); err != nil {
-				fmt.Printf("error Delete player_score: %s\n", err)
-			}
-		}(tenant)
-	}
-	wg.Wait()
-
 	dispenseIDMaster.mu.Lock()
 	dispenseIDMaster.id = 2678400000
 	dispenseIDMaster.mu.Unlock()
