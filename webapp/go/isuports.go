@@ -1331,9 +1331,9 @@ func playerHandler(c echo.Context) error {
 		FROM
 			player_score
 		WHERE
-			player_id = ? AND competition_id = ?
+			player_id = ?
 	`
-	rows, err := tenantDB.QueryContext(ctx, query)
+	rows, err := tenantDB.QueryContext(ctx, query, playerID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, playerID, err)
 	}
