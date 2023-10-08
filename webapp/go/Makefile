@@ -8,10 +8,11 @@ build:
 	echo "build is not needed"
 
 deploy:
-	sudo systemctl daemon-reload
 	cp -r ./ ~/webapp/go/
 	cp -r ../sql ~/webapp/
 	cp ../docker-compose-go.yml ~/webapp/
+	sudo cp ./isuports.service /etc/systemd/system/isuports.service
+	sudo systemctl daemon-reload
 	sudo systemctl restart isuports.service
 
 show-applog:

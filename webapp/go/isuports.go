@@ -1278,8 +1278,9 @@ func billingHandler(c echo.Context) error {
 }
 
 type PlayerScoreDetail struct {
-	CompetitionTitle string `json:"competition_title" db:"competition_title"`
-	Score            int64  `json:"score" db:"score"`
+	competitionCreatedAt int64  `json:"-"`
+	CompetitionTitle     string `json:"competition_title" db:"competition_title"`
+	Score                int64  `json:"score" db:"score"`
 }
 
 type PlayerHandlerResult struct {
@@ -1323,33 +1324,37 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	psds := []PlayerScoreDetail{}
 	query := `
 		SELECT
-			competition.title AS competition_title,
-			p.score AS score
+			score,
+			competition_id
 		FROM
-			competition
-		LEFT JOIN
-			player_score p ON p.id = (
-				SELECT id
-				FROM player_score
-				WHERE player_id = ? AND competition_id = competition.id
-				ORDER BY row_num DESC
-				LIMIT 1
-			)
+			player_score
 		WHERE
-			competition.tenant_id = ? AND
-			p.id IS NOT NULL
-		ORDER BY
-			competition.created_at ASC
+			player_id = ?
 	`
-	if err := tenantDB.SelectContext(ctx, &psds, query, p.ID, v.tenantID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, p.ID, err)
+	rows, err := tenantDB.QueryContext(ctx, query, playerID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, playerID, err)
 	}
-
-	// player が失格になった可能性を考慮して、最新のデータを取得する
-	p, _ = retrievePlayer(ctx, tenantDB, playerID)
+	defer rows.Close()
+	psds := make([]PlayerScoreDetail, 0, 1000)
+	for rows.Next() {
+		var score int64
+		var compID string
+		if err := rows.Scan(&score, &compID); err != nil {
+			return fmt.Errorf("error Scan player_score: %w", err)
+		}
+		comp, _ := retrieveCompetition(ctx, tenantDB, compID)
+		psds = append(psds, PlayerScoreDetail{
+			competitionCreatedAt: comp.CreatedAt,
+			CompetitionTitle:     comp.Title,
+			Score:                score,
+		})
+	}
+	sort.Slice(psds, func(i, j int) bool {
+		return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
+	})
 
 	res := SuccessResult{
 		Status: true,

@@ -3,6 +3,7 @@ build:
 
 deploy:
 	mkdir -p ~/webapp/sqlite && touch ~/webapp/sqlite/trace.json
+	sudo cp limits.conf /etc/security/limits.conf
 	make -C webapp/go deploy
 
 bench-prepare:
