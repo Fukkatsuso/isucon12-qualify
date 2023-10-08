@@ -347,16 +347,11 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	}
 
 	// テナントの存在確認
-	var tenant TenantRow
-	if err := adminDB.GetContext(
-		context.Background(),
-		&tenant,
-		"SELECT * FROM tenant WHERE name = ?",
-		tenantName,
-	); err != nil {
-		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", tenantName, err)
+	tenant, err := getTenantCache(tenantName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tenant: name=%s, %w", tenantName, err)
 	}
-	return &tenant, nil
+	return tenant, nil
 }
 
 type TenantRow struct {
@@ -365,6 +360,40 @@ type TenantRow struct {
 	DisplayName string `db:"display_name"`
 	CreatedAt   int64  `db:"created_at"`
 	UpdatedAt   int64  `db:"updated_at"`
+}
+
+var tenantCache struct {
+	mu   sync.RWMutex
+	data map[string]*TenantRow
+}
+
+func getTenantCache(name string) (*TenantRow, error) {
+	tenantCache.mu.RLock()
+	tenant, ok := tenantCache.data[name]
+	if ok {
+		tenantCache.mu.RUnlock()
+		return tenant, nil
+	}
+	tenantCache.mu.RUnlock()
+
+	if err := adminDB.GetContext(
+		context.Background(),
+		tenant,
+		"SELECT * FROM tenant WHERE name = ?",
+		name,
+	); err != nil {
+		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", name, err)
+	}
+
+	setTenantCache(name, tenant)
+
+	return tenant, nil
+}
+
+func setTenantCache(name string, tenant *TenantRow) {
+	tenantCache.mu.Lock()
+	tenantCache.data[name] = tenant
+	tenantCache.mu.Unlock()
 }
 
 type dbOrTx interface {
@@ -1727,6 +1756,13 @@ func initializeHandler(c echo.Context) error {
 	dispenseIDMaster.mu.Lock()
 	dispenseIDMaster.id = 2678400000
 	dispenseIDMaster.mu.Unlock()
+
+	tenantCache = struct {
+		mu   sync.RWMutex
+		data map[string]*TenantRow
+	}{
+		data: make(map[string]*TenantRow, 10000),
+	}
 
 	playerCache = struct {
 		mu   sync.Mutex
