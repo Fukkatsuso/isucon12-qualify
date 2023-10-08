@@ -13,4 +13,4 @@ WorkingDirectory=/home/isucon/webapp
 ExecStart=docker compose -f docker-compose-go.yml up --build
 ExecStop=docker compose -f docker-compose-go.yml down
 Restart=always
-LimitNOFILE=1006500
+LimitNOFILE=65536
