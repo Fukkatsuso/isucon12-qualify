@@ -1460,28 +1460,36 @@ func competitionRankingHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role player required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
-	if err != nil {
-		return err
-	}
-	defer tenantDB.Close()
-
-	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
-		return err
-	}
-
-	competitionID := c.Param("competition_id")
-	if competitionID == "" {
-		return echo.NewHTTPError(http.StatusBadRequest, "competition_id is required")
-	}
-
-	// 大会の存在確認
-	competition, err := retrieveCompetition(ctx, tenantDB, competitionID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusNotFound, "competition not found")
+	// 早めに tenantDB を Close したい
+	competition, err := func() (*CompetitionRow, error) {
+		tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
+		if err != nil {
+			return nil, err
 		}
-		return fmt.Errorf("error retrieveCompetition: %w", err)
+		defer tenantDB.Close()
+
+		if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
+			return nil, err
+		}
+
+		competitionID := c.Param("competition_id")
+		if competitionID == "" {
+			return nil, echo.NewHTTPError(http.StatusBadRequest, "competition_id is required")
+		}
+
+		// 大会の存在確認
+		competition, err := retrieveCompetition(ctx, tenantDB, competitionID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, echo.NewHTTPError(http.StatusNotFound, "competition not found")
+			}
+			return nil, fmt.Errorf("error retrieveCompetition: %w", err)
+		}
+
+		return competition, nil
+	}()
+	if err != nil {
+		return err
 	}
 
 	now := time.Now().Unix()
@@ -1493,11 +1501,11 @@ func competitionRankingHandler(c echo.Context) error {
 	if _, err := adminDB.ExecContext(
 		ctx,
 		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, tenant.ID, competitionID, now, now,
+		v.playerID, tenant.ID, competition.ID, now, now,
 	); err != nil {
 		return fmt.Errorf(
 			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-			v.playerID, tenant.ID, competitionID, now, now, err,
+			v.playerID, tenant.ID, competition.ID, now, now, err,
 		)
 	}
 
@@ -1509,7 +1517,7 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
-	pagedRanks := getPagedRanks(v.tenantID, competitionID, rankAfter)
+	pagedRanks := getPagedRanks(v.tenantID, competition.ID, rankAfter)
 
 	res := SuccessResult{
 		Status: true,
