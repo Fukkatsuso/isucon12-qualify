@@ -369,25 +369,25 @@ var tenantCache struct {
 
 func getTenantCache(name string) (*TenantRow, error) {
 	tenantCache.mu.RLock()
-	tenant, ok := tenantCache.data[name]
-	if ok {
-		tenantCache.mu.RUnlock()
-		return tenant, nil
-	}
+	v, ok := tenantCache.data[name]
 	tenantCache.mu.RUnlock()
+	if ok {
+		return v, nil
+	}
 
+	var tenant TenantRow
 	if err := adminDB.GetContext(
 		context.Background(),
-		tenant,
+		&tenant,
 		"SELECT * FROM tenant WHERE name = ?",
 		name,
 	); err != nil {
 		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", name, err)
 	}
 
-	setTenantCache(name, tenant)
+	setTenantCache(name, &tenant)
 
-	return tenant, nil
+	return &tenant, nil
 }
 
 func setTenantCache(name string, tenant *TenantRow) {
