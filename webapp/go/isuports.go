@@ -1080,8 +1080,7 @@ func competitionsAddHandler(c echo.Context) error {
 	}
 	if err = tx.Commit(); err != nil {
 		tx.Rollback()
-		c.Response().Header().Set("Retry-After", "3")
-		return c.JSON(http.StatusTooManyRequests, FailureResult{Status: false, Message: err.Error()})
+		return fmt.Errorf("error commit: %w", err)
 	}
 
 	res := CompetitionsAddHandlerResult{
