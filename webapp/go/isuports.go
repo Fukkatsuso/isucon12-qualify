@@ -533,8 +533,6 @@ type PlayerScoreRow struct {
 	UpdatedAt     int64  `db:"updated_at"`
 }
 
-var playerScoreMutex sync.RWMutex
-
 type TenantsAddHandlerResult struct {
 	Tenant TenantWithBilling `json:"tenant"`
 }
@@ -1261,8 +1259,6 @@ func competitionScoreHandler(c echo.Context) error {
 
 	tx := tenantDB.MustBeginTx(ctx, &sql.TxOptions{ReadOnly: false})
 
-	playerScoreMutex.Lock()
-	defer playerScoreMutex.Unlock()
 	if _, err := tx.ExecContext(
 		ctx,
 		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
