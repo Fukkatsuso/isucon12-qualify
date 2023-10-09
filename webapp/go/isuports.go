@@ -484,34 +484,38 @@ type CompetitionRow struct {
 }
 
 var competitionCache struct {
-	mu   sync.Mutex
-	data map[string]*CompetitionRow
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[string]*CompetitionRow
 }
 
 // 大会を取得する
 func retrieveCompetition(ctx context.Context, tenantDB dbOrTx, id string) (*CompetitionRow, error) {
 	// get from cache
-	competitionCache.mu.Lock()
+	competitionCache.mu.RLock()
 	v, ok := competitionCache.data[id]
-	competitionCache.mu.Unlock()
+	competitionCache.mu.RUnlock()
 	if ok {
 		return v, nil
 	}
 
-	var c CompetitionRow
-	if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
-		return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
+	vv, err, _ := competitionCache.group.Do(fmt.Sprintf("retrieveCompetition_%s", id), func() (interface{}, error) {
+		var c CompetitionRow
+		if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
+			return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
+		}
+		setCompetitionCache(id, &c)
+		return c, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// set cache
-	competitionCache.mu.Lock()
-	competitionCache.data[id] = &c
-	competitionCache.mu.Unlock()
-
-	return &c, nil
+	competition := vv.(CompetitionRow)
+	return &competition, nil
 }
 
-func updateCompetitionCache(id string, comp *CompetitionRow) {
+func setCompetitionCache(id string, comp *CompetitionRow) {
 	competitionCache.mu.Lock()
 	competitionCache.data[id] = comp
 	competitionCache.mu.Unlock()
@@ -1121,7 +1125,7 @@ func competitionFinishHandler(c echo.Context) error {
 		CreatedAt:  latestComp.CreatedAt,
 		UpdatedAt:  now,
 	}
-	updateCompetitionCache(id, &updatedComp)
+	setCompetitionCache(id, &updatedComp)
 
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
@@ -1788,8 +1792,9 @@ func initializeHandler(c echo.Context) error {
 	}
 
 	competitionCache = struct {
-		mu   sync.Mutex
-		data map[string]*CompetitionRow
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[string]*CompetitionRow
 	}{
 		data: make(map[string]*CompetitionRow, 100000),
 	}
