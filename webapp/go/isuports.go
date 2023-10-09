@@ -28,6 +28,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -164,6 +165,7 @@ func Run() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(SetCacheControlPrivate)
+	e.Use(middleware.Gzip())
 
 	// SaaS管理者向けAPI
 	e.POST("/api/admin/tenants/add", tenantsAddHandler)
@@ -201,6 +203,18 @@ func Run() {
 	}
 	adminDB.SetMaxOpenConns(10)
 	defer adminDB.Close()
+
+	// jwtParseOption
+	keyFilename := getEnv("ISUCON_JWT_KEY_FILE", "../public.pem")
+	keysrc, err := os.ReadFile(keyFilename)
+	if err != nil {
+		e.Logger.Fatalf("error os.ReadFile: keyFilename=%s: %w", keyFilename, err)
+	}
+	key, _, err := jwk.DecodePEM(keysrc)
+	if err != nil {
+		e.Logger.Fatalf("error jwk.DecodePEM: %w", err)
+	}
+	jwtParseOption = jwt.WithKey(jwa.RS256, key)
 
 	port := getEnv("SERVER_APP_PORT", "3000")
 	e.Logger.Infof("starting isuports server on : %s ...", port)
@@ -241,6 +255,8 @@ type Viewer struct {
 	tenantID   int64
 }
 
+var jwtParseOption jwt.SignEncryptParseOption
+
 // リクエストヘッダをパースしてViewerを返す
 func parseViewer(c echo.Context) (*Viewer, error) {
 	cookie, err := c.Request().Cookie(cookieName)
@@ -252,19 +268,9 @@ func parseViewer(c echo.Context) (*Viewer, error) {
 	}
 	tokenStr := cookie.Value
 
-	keyFilename := getEnv("ISUCON_JWT_KEY_FILE", "../public.pem")
-	keysrc, err := os.ReadFile(keyFilename)
-	if err != nil {
-		return nil, fmt.Errorf("error os.ReadFile: keyFilename=%s: %w", keyFilename, err)
-	}
-	key, _, err := jwk.DecodePEM(keysrc)
-	if err != nil {
-		return nil, fmt.Errorf("error jwk.DecodePEM: %w", err)
-	}
-
 	token, err := jwt.Parse(
 		[]byte(tokenStr),
-		jwt.WithKey(jwa.RS256, key),
+		jwtParseOption,
 	)
 	if err != nil {
 		return nil, echo.NewHTTPError(http.StatusUnauthorized, fmt.Errorf("error jwt.Parse: %s", err.Error()))
@@ -342,16 +348,11 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	}
 
 	// テナントの存在確認
-	var tenant TenantRow
-	if err := adminDB.GetContext(
-		context.Background(),
-		&tenant,
-		"SELECT * FROM tenant WHERE name = ?",
-		tenantName,
-	); err != nil {
-		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", tenantName, err)
+	tenant, err := getTenantCache(tenantName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tenant: name=%s, %w", tenantName, err)
 	}
-	return &tenant, nil
+	return tenant, nil
 }
 
 type TenantRow struct {
@@ -360,6 +361,48 @@ type TenantRow struct {
 	DisplayName string `db:"display_name"`
 	CreatedAt   int64  `db:"created_at"`
 	UpdatedAt   int64  `db:"updated_at"`
+}
+
+var tenantCache struct {
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[string]*TenantRow
+}
+
+func getTenantCache(name string) (*TenantRow, error) {
+	tenantCache.mu.RLock()
+	v, ok := tenantCache.data[name]
+	tenantCache.mu.RUnlock()
+	if ok {
+		return v, nil
+	}
+
+	vv, err, _ := tenantCache.group.Do(fmt.Sprintf("getTenantCache_%s", name), func() (interface{}, error) {
+		var tenant TenantRow
+		if err := adminDB.GetContext(
+			context.Background(),
+			&tenant,
+			"SELECT * FROM tenant WHERE name = ?",
+			name,
+		); err != nil {
+			return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", name, err)
+		}
+
+		setTenantCache(name, &tenant)
+		return tenant, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	tenant := vv.(TenantRow)
+	return &tenant, nil
+}
+
+func setTenantCache(name string, tenant *TenantRow) {
+	tenantCache.mu.Lock()
+	tenantCache.data[name] = tenant
+	tenantCache.mu.Unlock()
 }
 
 type dbOrTx interface {
@@ -611,7 +654,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err := adminDB.SelectContext(
 		ctx,
 		&vhs,
-		"SELECT player_id, MIN(created_at) AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? GROUP BY player_id",
+		`SELECT player_id, created_at AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ?`,
 		tenantID,
 		comp.ID,
 	); err != nil && err != sql.ErrNoRows {
@@ -1460,44 +1503,49 @@ func competitionRankingHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, "role player required")
 	}
 
-	tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadWrite)
-	if err != nil {
-		return err
-	}
-	defer tenantDB.Close()
-
-	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
-		return err
-	}
-
-	competitionID := c.Param("competition_id")
-	if competitionID == "" {
-		return echo.NewHTTPError(http.StatusBadRequest, "competition_id is required")
-	}
-
-	// 大会の存在確認
-	competition, err := retrieveCompetition(ctx, tenantDB, competitionID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return echo.NewHTTPError(http.StatusNotFound, "competition not found")
+	// 早めに tenantDB を Close したい
+	competition, err := func() (*CompetitionRow, error) {
+		tenantDB, err := connectToTenantDB(v.tenantID, SQLiteModeReadOnly)
+		if err != nil {
+			return nil, err
 		}
-		return fmt.Errorf("error retrieveCompetition: %w", err)
+		defer tenantDB.Close()
+
+		if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
+			return nil, err
+		}
+
+		competitionID := c.Param("competition_id")
+		if competitionID == "" {
+			return nil, echo.NewHTTPError(http.StatusBadRequest, "competition_id is required")
+		}
+
+		// 大会の存在確認
+		competition, err := retrieveCompetition(ctx, tenantDB, competitionID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, echo.NewHTTPError(http.StatusNotFound, "competition not found")
+			}
+			return nil, fmt.Errorf("error retrieveCompetition: %w", err)
+		}
+
+		return competition, nil
+	}()
+	if err != nil {
+		return err
 	}
 
+	tenantID := competition.TenantID
 	now := time.Now().Unix()
-	var tenant TenantRow
-	if err := adminDB.GetContext(ctx, &tenant, "SELECT * FROM tenant WHERE id = ?", v.tenantID); err != nil {
-		return fmt.Errorf("error Select tenant: id=%d, %w", v.tenantID, err)
-	}
-
 	if _, err := adminDB.ExecContext(
 		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, tenant.ID, competitionID, now, now,
+		`INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at)`,
+		v.playerID, tenantID, competition.ID, now, now,
 	); err != nil {
 		return fmt.Errorf(
 			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-			v.playerID, tenant.ID, competitionID, now, now, err,
+			v.playerID, tenantID, competition.ID, now, now, err,
 		)
 	}
 
@@ -1509,7 +1557,7 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 	}
 
-	pagedRanks := getPagedRanks(v.tenantID, competitionID, rankAfter)
+	pagedRanks := getPagedRanks(v.tenantID, competition.ID, rankAfter)
 
 	res := SuccessResult{
 		Status: true,
@@ -1714,6 +1762,14 @@ func initializeHandler(c echo.Context) error {
 	dispenseIDMaster.mu.Lock()
 	dispenseIDMaster.id = 2678400000
 	dispenseIDMaster.mu.Unlock()
+
+	tenantCache = struct {
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[string]*TenantRow
+	}{
+		data: make(map[string]*TenantRow, 10000),
+	}
 
 	playerCache = struct {
 		mu   sync.Mutex
