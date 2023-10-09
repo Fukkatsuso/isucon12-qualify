@@ -421,31 +421,41 @@ type PlayerRow struct {
 }
 
 var playerCache struct {
-	mu   sync.Mutex
-	data map[string]*PlayerRow
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[string]*PlayerRow
+}
+
+func setPlayerCache(id string, player *PlayerRow) {
+	playerCache.mu.Lock()
+	playerCache.data[id] = player
+	playerCache.mu.Unlock()
 }
 
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
 	// get from cache
-	playerCache.mu.Lock()
+	playerCache.mu.RLock()
 	v, ok := playerCache.data[id]
-	playerCache.mu.Unlock()
+	playerCache.mu.RUnlock()
 	if ok {
 		return v, nil
 	}
 
-	var p PlayerRow
-	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
-		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
+	vv, err, _ := playerCache.group.Do(fmt.Sprintf("retrievePlayer_%s", id), func() (interface{}, error) {
+		var p PlayerRow
+		if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
+			return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
+		}
+		setPlayerCache(id, &p)
+		return p, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// set cache
-	playerCache.mu.Lock()
-	playerCache.data[id] = &p
-	playerCache.mu.Unlock()
-
-	return &p, nil
+	player := vv.(PlayerRow)
+	return &player, nil
 }
 
 // 参加者を認可する
@@ -474,34 +484,38 @@ type CompetitionRow struct {
 }
 
 var competitionCache struct {
-	mu   sync.Mutex
-	data map[string]*CompetitionRow
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[string]*CompetitionRow
 }
 
 // 大会を取得する
 func retrieveCompetition(ctx context.Context, tenantDB dbOrTx, id string) (*CompetitionRow, error) {
 	// get from cache
-	competitionCache.mu.Lock()
+	competitionCache.mu.RLock()
 	v, ok := competitionCache.data[id]
-	competitionCache.mu.Unlock()
+	competitionCache.mu.RUnlock()
 	if ok {
 		return v, nil
 	}
 
-	var c CompetitionRow
-	if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
-		return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
+	vv, err, _ := competitionCache.group.Do(fmt.Sprintf("retrieveCompetition_%s", id), func() (interface{}, error) {
+		var c CompetitionRow
+		if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
+			return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
+		}
+		setCompetitionCache(id, &c)
+		return c, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// set cache
-	competitionCache.mu.Lock()
-	competitionCache.data[id] = &c
-	competitionCache.mu.Unlock()
-
-	return &c, nil
+	competition := vv.(CompetitionRow)
+	return &competition, nil
 }
 
-func updateCompetitionCache(id string, comp *CompetitionRow) {
+func setCompetitionCache(id string, comp *CompetitionRow) {
 	competitionCache.mu.Lock()
 	competitionCache.data[id] = comp
 	competitionCache.mu.Unlock()
@@ -623,8 +637,9 @@ type tenantAndComp struct {
 }
 
 var billingReportCache struct {
-	mu   sync.Mutex
-	data map[tenantAndComp]*BillingReport
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[tenantAndComp]*BillingReport
 }
 
 // 大会ごとの課金レポートを計算する
@@ -642,73 +657,80 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		}, nil
 	}
 	// get from cache
-	billingReportCache.mu.Lock()
+	billingReportCache.mu.RLock()
 	v, ok := billingReportCache.data[tenantAndComp{tenantID, comp.ID}]
-	billingReportCache.mu.Unlock()
+	billingReportCache.mu.RUnlock()
 	if ok {
 		return v, nil
 	}
 
-	// ランキングにアクセスした参加者のIDを取得する
-	vhs := []VisitHistorySummaryRow{}
-	if err := adminDB.SelectContext(
-		ctx,
-		&vhs,
-		`SELECT player_id, created_at AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ?`,
-		tenantID,
-		comp.ID,
-	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
-	}
-	billingMap := map[string]string{}
-	for _, vh := range vhs {
-		// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
-		if comp.FinishedAt.Int64 < vh.MinCreatedAt {
-			continue
+	vv, err, _ := billingReportCache.group.Do(fmt.Sprintf("billingReportByCompetition_%s", comp.ID), func() (interface{}, error) {
+		// ランキングにアクセスした参加者のIDを取得する
+		vhs := []VisitHistorySummaryRow{}
+		if err := adminDB.SelectContext(
+			ctx,
+			&vhs,
+			`SELECT player_id, created_at AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ?`,
+			tenantID,
+			comp.ID,
+		); err != nil && err != sql.ErrNoRows {
+			return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 		}
-		billingMap[vh.PlayerID] = "visitor"
-	}
-
-	// スコアを登録した参加者のIDを取得する
-	scoredPlayerIDs := []string{}
-	if err := tenantDB.SelectContext(
-		ctx,
-		&scoredPlayerIDs,
-		"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
-		tenantID, comp.ID,
-	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
-	}
-	for _, pid := range scoredPlayerIDs {
-		// スコアが登録されている参加者
-		billingMap[pid] = "player"
-	}
-
-	// 大会が終了している場合のみ請求金額が確定するので計算する
-	var playerCount, visitorCount int64
-	for _, category := range billingMap {
-		switch category {
-		case "player":
-			playerCount++
-		case "visitor":
-			visitorCount++
+		billingMap := map[string]string{}
+		for _, vh := range vhs {
+			// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
+			if comp.FinishedAt.Int64 < vh.MinCreatedAt {
+				continue
+			}
+			billingMap[vh.PlayerID] = "visitor"
 		}
-	}
-	billingReport := BillingReport{
-		CompetitionID:     comp.ID,
-		CompetitionTitle:  comp.Title,
-		PlayerCount:       playerCount,
-		VisitorCount:      visitorCount,
-		BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
-		BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
-		BillingYen:        100*playerCount + 10*visitorCount,
+
+		// スコアを登録した参加者のIDを取得する
+		scoredPlayerIDs := []string{}
+		if err := tenantDB.SelectContext(
+			ctx,
+			&scoredPlayerIDs,
+			"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
+			tenantID, comp.ID,
+		); err != nil && err != sql.ErrNoRows {
+			return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+		}
+		for _, pid := range scoredPlayerIDs {
+			// スコアが登録されている参加者
+			billingMap[pid] = "player"
+		}
+
+		// 大会が終了している場合のみ請求金額が確定するので計算する
+		var playerCount, visitorCount int64
+		for _, category := range billingMap {
+			switch category {
+			case "player":
+				playerCount++
+			case "visitor":
+				visitorCount++
+			}
+		}
+		billingReport := BillingReport{
+			CompetitionID:     comp.ID,
+			CompetitionTitle:  comp.Title,
+			PlayerCount:       playerCount,
+			VisitorCount:      visitorCount,
+			BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
+			BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
+			BillingYen:        100*playerCount + 10*visitorCount,
+		}
+
+		// set cache
+		billingReportCache.mu.Lock()
+		billingReportCache.data[tenantAndComp{tenantID, comp.ID}] = &billingReport
+		billingReportCache.mu.Unlock()
+		return billingReport, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// set cache
-	billingReportCache.mu.Lock()
-	billingReportCache.data[tenantAndComp{tenantID, comp.ID}] = &billingReport
-	billingReportCache.mu.Unlock()
-
+	billingReport := vv.(BillingReport)
 	return &billingReport, nil
 }
 
@@ -987,17 +1009,15 @@ func playerDisqualifiedHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	// update playerCache
-	playerCache.mu.Lock()
-	playerCache.data[playerID] = &PlayerRow{
+	// update
+	setPlayerCache(playerID, &PlayerRow{
 		TenantID:       p.TenantID,
 		ID:             p.ID,
 		DisplayName:    p.DisplayName,
 		IsDisqualified: true,
 		CreatedAt:      p.CreatedAt,
 		UpdatedAt:      now,
-	}
-	playerCache.mu.Unlock()
+	})
 
 	res := PlayerDisqualifiedHandlerResult{
 		Player: PlayerDetail{
@@ -1113,7 +1133,7 @@ func competitionFinishHandler(c echo.Context) error {
 		CreatedAt:  latestComp.CreatedAt,
 		UpdatedAt:  now,
 	}
-	updateCompetitionCache(id, &updatedComp)
+	setCompetitionCache(id, &updatedComp)
 
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
@@ -1422,15 +1442,16 @@ type CompetitionRank struct {
 }
 
 var rankCache struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	data map[tenantAndComp][]CompetitionRank
 }
 
 func updateRanks(tenantID int64, compID string, scores []PlayerScoreRow) {
-	rankCache.mu.Lock()
-	defer rankCache.mu.Unlock()
-
-	tenantDB, _ := connectToTenantDB(tenantID, SQLiteModeReadOnly)
+	tenantDB, err := connectToTenantDB(tenantID, SQLiteModeReadOnly)
+	if err != nil {
+		fmt.Println("Failed to connect to tenant db:", err)
+		return
+	}
 	defer tenantDB.Close()
 
 	ctx := context.Background()
@@ -1455,15 +1476,16 @@ func updateRanks(tenantID int64, compID string, scores []PlayerScoreRow) {
 		return ranks[i].Score > ranks[j].Score
 	})
 
+	rankCache.mu.Lock()
 	rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}] = ranks
+	rankCache.mu.Unlock()
 }
 
 func getPagedRanks(tenantID int64, compID string, rankAfter int64) []CompetitionRank {
-	rankCache.mu.Lock()
-	defer rankCache.mu.Unlock()
-
-	ranks := rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}]
-	if ranks == nil {
+	rankCache.mu.RLock()
+	defer rankCache.mu.RUnlock()
+	ranks, ok := rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}]
+	if !ok {
 		return []CompetitionRank{}
 	}
 
@@ -1772,28 +1794,31 @@ func initializeHandler(c echo.Context) error {
 	}
 
 	playerCache = struct {
-		mu   sync.Mutex
-		data map[string]*PlayerRow
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[string]*PlayerRow
 	}{
 		data: make(map[string]*PlayerRow, 1000000),
 	}
 
 	competitionCache = struct {
-		mu   sync.Mutex
-		data map[string]*CompetitionRow
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[string]*CompetitionRow
 	}{
 		data: make(map[string]*CompetitionRow, 100000),
 	}
 
 	billingReportCache = struct {
-		mu   sync.Mutex
-		data map[tenantAndComp]*BillingReport
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[tenantAndComp]*BillingReport
 	}{
 		data: make(map[tenantAndComp]*BillingReport, 100*1000),
 	}
 
 	rankCache = struct {
-		mu   sync.Mutex
+		mu   sync.RWMutex
 		data map[tenantAndComp][]CompetitionRank
 	}{
 		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
