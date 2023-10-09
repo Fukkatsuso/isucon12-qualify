@@ -692,7 +692,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			ctx,
 			&scoredPlayerIDs,
 			"SELECT player_id FROM player_score WHERE competition_id = ?",
-			tenantID, comp.ID,
+			comp.ID,
 		); err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 		}
@@ -1316,7 +1316,6 @@ func billingHandler(c echo.Context) error {
 		ctx,
 		&cs,
 		"SELECT * FROM competition ORDER BY created_at DESC",
-		v.tenantID,
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
@@ -1659,7 +1658,6 @@ func competitionsHandler(c echo.Context, v *Viewer, tenantDB dbOrTx) error {
 		ctx,
 		&cs,
 		"SELECT * FROM competition ORDER BY created_at DESC",
-		v.tenantID,
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
