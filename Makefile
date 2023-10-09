@@ -3,6 +3,7 @@ build:
 
 deploy:
 	mkdir -p ~/webapp/sqlite && touch ~/webapp/sqlite/trace.json
+	sudo cp limits.conf /etc/security/limits.conf
 	make -C webapp/go deploy
 
 bench-prepare:
@@ -31,6 +32,9 @@ show-slowlog:
 
 show-applog:
 	make -C webapp/go show-applog
+
+show-nginx-errorlog:
+	sudo vim /var/log/nginx/error.log
 
 enable-pprof:
 	sed -i -e 's/PPROF=0/PPROF=1/' ~/webapp/env.sh

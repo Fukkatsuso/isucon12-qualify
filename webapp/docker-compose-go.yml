@@ -2,7 +2,7 @@ services:
   webapp:
     build: ./go
     environment:
-      ISUCON_DB_HOST: 127.0.0.1
+      # ISUCON_DB_HOST: 127.0.0.1
       ISUCON_DB_PORT: 3306
       ISUCON_DB_USER: isucon
       ISUCON_DB_PASSWORD: isucon
@@ -15,6 +15,7 @@ services:
       - /home/isucon/webapp/sql:/home/isucon/webapp/sql
       - /home/isucon/webapp/public.pem:/home/isucon/webapp/public.pem:ro
       - /home/isucon/initial_data:/home/isucon/initial_data
+      - /home/isucon/initial_data_my:/home/isucon/initial_data_my
       - /home/isucon/tmp:/home/isucon/tmp
       - /home/isucon/webapp/sqlite:/home/isucon/webapp/sqlite
     init: true
