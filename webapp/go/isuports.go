@@ -1442,15 +1442,16 @@ type CompetitionRank struct {
 }
 
 var rankCache struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	data map[tenantAndComp][]CompetitionRank
 }
 
 func updateRanks(tenantID int64, compID string, scores []PlayerScoreRow) {
-	rankCache.mu.Lock()
-	defer rankCache.mu.Unlock()
-
-	tenantDB, _ := connectToTenantDB(tenantID, SQLiteModeReadOnly)
+	tenantDB, err := connectToTenantDB(tenantID, SQLiteModeReadOnly)
+	if err != nil {
+		fmt.Println("Failed to connect to tenant db:", err)
+		return
+	}
 	defer tenantDB.Close()
 
 	ctx := context.Background()
@@ -1475,15 +1476,16 @@ func updateRanks(tenantID int64, compID string, scores []PlayerScoreRow) {
 		return ranks[i].Score > ranks[j].Score
 	})
 
+	rankCache.mu.Lock()
 	rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}] = ranks
+	rankCache.mu.Unlock()
 }
 
 func getPagedRanks(tenantID int64, compID string, rankAfter int64) []CompetitionRank {
-	rankCache.mu.Lock()
-	defer rankCache.mu.Unlock()
-
-	ranks := rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}]
-	if ranks == nil {
+	rankCache.mu.RLock()
+	defer rankCache.mu.RUnlock()
+	ranks, ok := rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}]
+	if !ok {
 		return []CompetitionRank{}
 	}
 
@@ -1816,7 +1818,7 @@ func initializeHandler(c echo.Context) error {
 	}
 
 	rankCache = struct {
-		mu   sync.Mutex
+		mu   sync.RWMutex
 		data map[tenantAndComp][]CompetitionRank
 	}{
 		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
