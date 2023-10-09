@@ -33,6 +33,9 @@ show-slowlog:
 show-applog:
 	make -C webapp/go show-applog
 
+show-nginx-errorlog:
+	sudo vim /var/log/nginx/error.log
+
 enable-pprof:
 	sed -i -e 's/PPROF=0/PPROF=1/' ~/webapp/env.sh
 
