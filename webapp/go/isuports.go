@@ -421,31 +421,41 @@ type PlayerRow struct {
 }
 
 var playerCache struct {
-	mu   sync.Mutex
-	data map[string]*PlayerRow
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[string]*PlayerRow
+}
+
+func setPlayerCache(id string, player *PlayerRow) {
+	playerCache.mu.Lock()
+	playerCache.data[id] = player
+	playerCache.mu.Unlock()
 }
 
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
 	// get from cache
-	playerCache.mu.Lock()
+	playerCache.mu.RLock()
 	v, ok := playerCache.data[id]
-	playerCache.mu.Unlock()
+	playerCache.mu.RUnlock()
 	if ok {
 		return v, nil
 	}
 
-	var p PlayerRow
-	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
-		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
+	vv, err, _ := playerCache.group.Do(fmt.Sprintf("retrievePlayer_%s", id), func() (interface{}, error) {
+		var p PlayerRow
+		if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
+			return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
+		}
+		setPlayerCache(id, &p)
+		return p, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	// set cache
-	playerCache.mu.Lock()
-	playerCache.data[id] = &p
-	playerCache.mu.Unlock()
-
-	return &p, nil
+	player := vv.(PlayerRow)
+	return &player, nil
 }
 
 // 参加者を認可する
@@ -987,17 +997,15 @@ func playerDisqualifiedHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	// update playerCache
-	playerCache.mu.Lock()
-	playerCache.data[playerID] = &PlayerRow{
+	// update
+	setPlayerCache(playerID, &PlayerRow{
 		TenantID:       p.TenantID,
 		ID:             p.ID,
 		DisplayName:    p.DisplayName,
 		IsDisqualified: true,
 		CreatedAt:      p.CreatedAt,
 		UpdatedAt:      now,
-	}
-	playerCache.mu.Unlock()
+	})
 
 	res := PlayerDisqualifiedHandlerResult{
 		Player: PlayerDetail{
@@ -1772,8 +1780,9 @@ func initializeHandler(c echo.Context) error {
 	}
 
 	playerCache = struct {
-		mu   sync.Mutex
-		data map[string]*PlayerRow
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[string]*PlayerRow
 	}{
 		data: make(map[string]*PlayerRow, 1000000),
 	}
