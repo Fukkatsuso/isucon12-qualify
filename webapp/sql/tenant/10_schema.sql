@@ -30,3 +30,4 @@ CREATE TABLE player_score (
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL
 );
+CREATE INDEX player_id_idx ON player_score(player_id);
