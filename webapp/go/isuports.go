@@ -691,7 +691,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		if err := tenantDB.SelectContext(
 			ctx,
 			&scoredPlayerIDs,
-			"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
+			"SELECT player_id FROM player_score WHERE competition_id = ?",
 			tenantID, comp.ID,
 		); err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
@@ -810,7 +810,7 @@ func tenantsBillingHandler(c echo.Context) error {
 			ids := []struct {
 				ID string `db:"id"`
 			}{}
-			err = tenantDB.SelectContext(ctx, &ids, "SELECT id FROM competition WHERE tenant_id=?", t.ID)
+			err = tenantDB.SelectContext(ctx, &ids, "SELECT id FROM competition")
 			if err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
@@ -871,8 +871,7 @@ func playersListHandler(c echo.Context) error {
 	if err := tenantDB.SelectContext(
 		ctx,
 		&pls,
-		"SELECT * FROM player WHERE tenant_id=? ORDER BY created_at DESC",
-		v.tenantID,
+		"SELECT * FROM player ORDER BY created_at DESC",
 	); err != nil {
 		return fmt.Errorf("error Select player: %w", err)
 	}
@@ -1316,7 +1315,7 @@ func billingHandler(c echo.Context) error {
 	if err := tenantDB.SelectContext(
 		ctx,
 		&cs,
-		"SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
+		"SELECT * FROM competition ORDER BY created_at DESC",
 		v.tenantID,
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
@@ -1659,7 +1658,7 @@ func competitionsHandler(c echo.Context, v *Viewer, tenantDB dbOrTx) error {
 	if err := tenantDB.SelectContext(
 		ctx,
 		&cs,
-		"SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
+		"SELECT * FROM competition ORDER BY created_at DESC",
 		v.tenantID,
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
