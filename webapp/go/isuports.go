@@ -1483,8 +1483,8 @@ func updateRanks(tenantID int64, compID string, scores []PlayerScoreRow) {
 
 func getPagedRanks(tenantID int64, compID string, rankAfter int64) []CompetitionRank {
 	rankCache.mu.RLock()
-	defer rankCache.mu.RUnlock()
 	ranks, ok := rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}]
+	rankCache.mu.RUnlock()
 	if !ok {
 		return []CompetitionRank{}
 	}
