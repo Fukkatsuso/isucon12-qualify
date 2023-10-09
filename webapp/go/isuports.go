@@ -1557,19 +1557,23 @@ func competitionRankingHandler(c echo.Context) error {
 		return err
 	}
 
-	tenantID := competition.TenantID
-	now := time.Now().Unix()
-	if _, err := adminDB.ExecContext(
-		ctx,
-		`INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		now := time.Now().Unix()
+		if _, err := adminDB.ExecContext(
+			ctx,
+			`INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at)`,
-		v.playerID, tenantID, competition.ID, now, now,
-	); err != nil {
-		return fmt.Errorf(
-			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-			v.playerID, tenantID, competition.ID, now, now, err,
-		)
-	}
+			v.playerID, v.tenantID, competition.ID, now, now,
+		); err != nil {
+			fmt.Printf(
+				"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %s\n",
+				v.playerID, v.tenantID, competition.ID, now, now, err,
+			)
+		}
+	}()
 
 	var rankAfter int64
 	rankAfterStr := c.QueryParam("rank_after")
@@ -1580,6 +1584,8 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	pagedRanks := getPagedRanks(v.tenantID, competition.ID, rankAfter)
+
+	wg.Wait()
 
 	res := SuccessResult{
 		Status: true,
