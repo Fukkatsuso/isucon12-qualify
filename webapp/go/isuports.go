@@ -667,7 +667,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 
 	vv, err, _ := billingReportCache.group.Do(fmt.Sprintf("billingReportByCompetition_%s", comp.ID), func() (interface{}, error) {
 		// ランキングにアクセスした参加者のIDを取得する
-		vhs := []VisitHistorySummaryRow{}
+		vhs := make([]VisitHistorySummaryRow, 0, 10000)
 		if err := adminDB.SelectContext(
 			ctx,
 			&vhs,
@@ -677,17 +677,9 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		); err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 		}
-		billingMap := map[string]string{}
-		for _, vh := range vhs {
-			// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
-			if comp.FinishedAt.Int64 < vh.MinCreatedAt {
-				continue
-			}
-			billingMap[vh.PlayerID] = "visitor"
-		}
 
 		// スコアを登録した参加者のIDを取得する
-		scoredPlayerIDs := []string{}
+		scoredPlayerIDs := make([]string, 0, 10000)
 		if err := tenantDB.SelectContext(
 			ctx,
 			&scoredPlayerIDs,
@@ -695,6 +687,15 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			comp.ID,
 		); err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+		}
+
+		billingMap := make(map[string]string, len(vhs)+len(scoredPlayerIDs))
+		for _, vh := range vhs {
+			// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
+			if comp.FinishedAt.Int64 < vh.MinCreatedAt {
+				continue
+			}
+			billingMap[vh.PlayerID] = "visitor"
 		}
 		for _, pid := range scoredPlayerIDs {
 			// スコアが登録されている参加者
