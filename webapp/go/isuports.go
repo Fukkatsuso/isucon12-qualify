@@ -1560,6 +1560,10 @@ func competitionRankingHandler(c echo.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		// visit_history への INSERT は、大会開催中のみの実行で良い
+		if competition.FinishedAt.Valid {
+			return
+		}
 		now := time.Now().Unix()
 		if _, err := adminDB.ExecContext(
 			ctx,
