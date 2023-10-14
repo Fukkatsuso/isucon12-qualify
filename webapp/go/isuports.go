@@ -1280,15 +1280,13 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// player のスコア一覧キャッシュを消しておく
-	go func() {
-		for _, score := range playerScoreRows {
-			setPlayerScoreDetailsCache(score.PlayerID, nil)
-		}
-	}()
-
 	// ランキングを更新しておく
 	go updateRanks(v.tenantID, competitionID, playerScoreRows)
+
+	// player のスコア一覧キャッシュを消しておく
+	for _, score := range playerScoreRows {
+		setPlayerScoreDetailsCache(score.PlayerID, nil)
+	}
 
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
