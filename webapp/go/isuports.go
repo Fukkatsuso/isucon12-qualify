@@ -1346,9 +1346,8 @@ func billingHandler(c echo.Context) error {
 }
 
 type PlayerScoreDetail struct {
-	competitionCreatedAt int64  `json:"-"`
-	CompetitionTitle     string `json:"competition_title" db:"competition_title"`
-	Score                int64  `json:"score" db:"score"`
+	CompetitionTitle string `json:"competition_title" db:"competition_title"`
+	Score            int64  `json:"score" db:"score"`
 }
 
 var playerScoreDetailsCache struct {
@@ -1366,41 +1365,21 @@ func getPlayerScoreDetails(ctx context.Context, tenantDB dbOrTx, playerID string
 		return v, nil
 	}
 
-	// query := `
-	// 	SELECT player_score.score AS score, competition.title AS competition_title
-	// 	FROM player_score
-	// 	LEFT JOIN competition ON player_score.competition_id = competition.id
-	// 	WHERE player_score.player_id = ?
-	// `
-
 	vv, err, _ := playerScoreDetailsCache.group.Do(
 		fmt.Sprintf("getPlayerScoreDetail_%s_%d", playerID, playerScoreDetailsCache.updatedAt),
 		func() (interface{}, error) {
-			res := make([]struct {
-				CompetitionId string `db:"competition_id"`
-				Score         int64  `db:"score"`
-			}, 0, 1000)
+			psds := make([]PlayerScoreDetail, 0, 1000)
 			query := `
-			SELECT score, competition_id
-			FROM player_score
-			WHERE player_id = ?
-		`
-			err := tenantDB.SelectContext(ctx, &res, query, playerID)
+				SELECT player_score.score AS score, competition.title AS competition_title
+				FROM player_score
+				LEFT JOIN competition ON player_score.competition_id = competition.id
+				WHERE player_score.player_id = ?
+				ORDER BY competition.created_at
+			`
+			err := tenantDB.SelectContext(ctx, &psds, query, playerID)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return nil, fmt.Errorf("error Select player_score: playerID=%s, %w", playerID, err)
 			}
-			psds := make([]PlayerScoreDetail, 0, 1000)
-			for _, row := range res {
-				comp, _ := retrieveCompetition(ctx, tenantDB, row.CompetitionId)
-				psds = append(psds, PlayerScoreDetail{
-					competitionCreatedAt: comp.CreatedAt,
-					CompetitionTitle:     comp.Title,
-					Score:                row.Score,
-				})
-			}
-			sort.Slice(psds, func(i, j int) bool {
-				return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
-			})
 
 			// set cache
 			setPlayerScoreDetailsCache(playerID, psds)
