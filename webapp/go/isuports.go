@@ -88,7 +88,7 @@ const (
 // テナントDBに接続する
 func connectToTenantDB(id int64, mode SQLiteMode) (*sqlx.DB, error) {
 	p := tenantDBPath(id)
-	db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?mode=%s&_busy_timeout=3000", p, mode))
+	db, err := sqlx.Open(sqliteDriverName, fmt.Sprintf("file:%s?cache=shared&mode=%s&_busy_timeout=3000", p, mode))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tenant DB: %w", err)
 	}
