@@ -1284,6 +1284,7 @@ func competitionScoreHandler(c echo.Context) error {
 	go updateRanks(v.tenantID, competitionID, playerScoreRows)
 
 	// player のスコア一覧キャッシュを消しておく
+	playerScoreDetailsCache.updatedAt = time.Now().Unix()
 	for _, score := range playerScoreRows {
 		setPlayerScoreDetailsCache(score.PlayerID, nil)
 	}
@@ -1351,9 +1352,10 @@ type PlayerScoreDetail struct {
 }
 
 var playerScoreDetailsCache struct {
-	mu    sync.RWMutex
-	group singleflight.Group
-	data  map[string][]PlayerScoreDetail
+	mu        sync.RWMutex
+	group     singleflight.Group
+	updatedAt int64
+	data      map[string][]PlayerScoreDetail
 }
 
 func getPlayerScoreDetails(ctx context.Context, tenantDB dbOrTx, playerID string) ([]PlayerScoreDetail, error) {
@@ -1371,37 +1373,39 @@ func getPlayerScoreDetails(ctx context.Context, tenantDB dbOrTx, playerID string
 	// 	WHERE player_score.player_id = ?
 	// `
 
-	vv, err, _ := playerScoreDetailsCache.group.Do(fmt.Sprintf("getPlayerScoreDetail_%s", playerID), func() (interface{}, error) {
-		res := make([]struct {
-			CompetitionId string `db:"competition_id"`
-			Score         int64  `db:"score"`
-		}, 0, 1000)
-		query := `
+	vv, err, _ := playerScoreDetailsCache.group.Do(
+		fmt.Sprintf("getPlayerScoreDetail_%s_%d", playerID, playerScoreDetailsCache.updatedAt),
+		func() (interface{}, error) {
+			res := make([]struct {
+				CompetitionId string `db:"competition_id"`
+				Score         int64  `db:"score"`
+			}, 0, 1000)
+			query := `
 			SELECT score, competition_id
 			FROM player_score
 			WHERE player_id = ?
 		`
-		err := tenantDB.SelectContext(ctx, &res, query)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("error Select player_score: playerID=%s, %w", playerID, err)
-		}
-		psds := make([]PlayerScoreDetail, 0, 1000)
-		for _, row := range res {
-			comp, _ := retrieveCompetition(ctx, tenantDB, row.CompetitionId)
-			psds = append(psds, PlayerScoreDetail{
-				competitionCreatedAt: comp.CreatedAt,
-				CompetitionTitle:     comp.Title,
-				Score:                row.Score,
+			err := tenantDB.SelectContext(ctx, &res, query)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("error Select player_score: playerID=%s, %w", playerID, err)
+			}
+			psds := make([]PlayerScoreDetail, 0, 1000)
+			for _, row := range res {
+				comp, _ := retrieveCompetition(ctx, tenantDB, row.CompetitionId)
+				psds = append(psds, PlayerScoreDetail{
+					competitionCreatedAt: comp.CreatedAt,
+					CompetitionTitle:     comp.Title,
+					Score:                row.Score,
+				})
+			}
+			sort.Slice(psds, func(i, j int) bool {
+				return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
 			})
-		}
-		sort.Slice(psds, func(i, j int) bool {
-			return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
-		})
 
-		// set cache
-		setPlayerScoreDetailsCache(playerID, psds)
-		return psds, nil
-	})
+			// set cache
+			setPlayerScoreDetailsCache(playerID, psds)
+			return psds, nil
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -1877,11 +1881,13 @@ func initializeHandler(c echo.Context) error {
 	}
 
 	playerScoreDetailsCache = struct {
-		mu    sync.RWMutex
-		group singleflight.Group
-		data  map[string][]PlayerScoreDetail
+		mu        sync.RWMutex
+		group     singleflight.Group
+		updatedAt int64
+		data      map[string][]PlayerScoreDetail
 	}{
-		data: make(map[string][]PlayerScoreDetail, 1000000),
+		updatedAt: 0,
+		data:      make(map[string][]PlayerScoreDetail, 1000000),
 	}
 
 	res := InitializeHandlerResult{
