@@ -92,6 +92,7 @@ func connectToTenantDB(id int64, mode SQLiteMode) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tenant DB: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	return db, nil
 }
 
