@@ -1385,7 +1385,7 @@ func getPlayerScoreDetails(ctx context.Context, tenantDB dbOrTx, playerID string
 			FROM player_score
 			WHERE player_id = ?
 		`
-			err := tenantDB.SelectContext(ctx, &res, query)
+			err := tenantDB.SelectContext(ctx, &res, query, playerID)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return nil, fmt.Errorf("error Select player_score: playerID=%s, %w", playerID, err)
 			}
