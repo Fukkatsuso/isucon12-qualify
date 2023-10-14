@@ -1360,9 +1360,9 @@ var playerScoreDetailsCache struct {
 
 func getPlayerScoreDetails(ctx context.Context, tenantDB dbOrTx, playerID string) ([]PlayerScoreDetail, error) {
 	playerScoreDetailsCache.mu.RLock()
-	v, ok := playerScoreDetailsCache.data[playerID]
+	v := playerScoreDetailsCache.data[playerID]
 	playerScoreDetailsCache.mu.RUnlock()
-	if ok {
+	if v != nil {
 		return v, nil
 	}
 
