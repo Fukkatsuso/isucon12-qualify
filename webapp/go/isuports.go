@@ -1280,6 +1280,13 @@ func competitionScoreHandler(c echo.Context) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	// player のスコア一覧キャッシュを消しておく
+	go func() {
+		for _, score := range playerScoreRows {
+			setPlayerScoreDetailsCache(score.PlayerID, nil)
+		}
+	}()
+
 	// ランキングを更新しておく
 	go updateRanks(v.tenantID, competitionID, playerScoreRows)
 
@@ -1345,6 +1352,72 @@ type PlayerScoreDetail struct {
 	Score                int64  `json:"score" db:"score"`
 }
 
+var playerScoreDetailsCache struct {
+	mu    sync.RWMutex
+	group singleflight.Group
+	data  map[string][]PlayerScoreDetail
+}
+
+func getPlayerScoreDetails(ctx context.Context, tenantDB dbOrTx, playerID string) ([]PlayerScoreDetail, error) {
+	playerScoreDetailsCache.mu.RLock()
+	v, ok := playerScoreDetailsCache.data[playerID]
+	playerScoreDetailsCache.mu.RUnlock()
+	if ok {
+		return v, nil
+	}
+
+	// query := `
+	// 	SELECT player_score.score AS score, competition.title AS competition_title
+	// 	FROM player_score
+	// 	LEFT JOIN competition ON player_score.competition_id = competition.id
+	// 	WHERE player_score.player_id = ?
+	// `
+
+	vv, err, _ := playerScoreDetailsCache.group.Do(fmt.Sprintf("getPlayerScoreDetail_%s", playerID), func() (interface{}, error) {
+		res := make([]struct {
+			CompetitionId string `db:"competition_id"`
+			Score         int64  `db:"score"`
+		}, 0, 1000)
+		query := `
+			SELECT score, competition_id
+			FROM player_score
+			WHERE player_id = ?
+		`
+		err := tenantDB.SelectContext(ctx, &res, query)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("error Select player_score: playerID=%s, %w", playerID, err)
+		}
+		psds := make([]PlayerScoreDetail, 0, 1000)
+		for _, row := range res {
+			comp, _ := retrieveCompetition(ctx, tenantDB, row.CompetitionId)
+			psds = append(psds, PlayerScoreDetail{
+				competitionCreatedAt: comp.CreatedAt,
+				CompetitionTitle:     comp.Title,
+				Score:                row.Score,
+			})
+		}
+		sort.Slice(psds, func(i, j int) bool {
+			return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
+		})
+
+		// set cache
+		setPlayerScoreDetailsCache(playerID, psds)
+		return psds, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	psds := vv.([]PlayerScoreDetail)
+	return psds, nil
+}
+
+func setPlayerScoreDetailsCache(playerID string, psds []PlayerScoreDetail) {
+	playerScoreDetailsCache.mu.Lock()
+	playerScoreDetailsCache.data[playerID] = psds
+	playerScoreDetailsCache.mu.Unlock()
+}
+
 type PlayerHandlerResult struct {
 	Player PlayerDetail        `json:"player"`
 	Scores []PlayerScoreDetail `json:"scores"`
@@ -1386,37 +1459,10 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	query := `
-		SELECT
-			score,
-			competition_id
-		FROM
-			player_score
-		WHERE
-			player_id = ?
-	`
-	rows, err := tenantDB.QueryContext(ctx, query, playerID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, playerID, err)
+	psds, err := getPlayerScoreDetails(ctx, tenantDB, playerID)
+	if err != nil {
+		return fmt.Errorf("error getPlayerScoreDetails: %w", err)
 	}
-	defer rows.Close()
-	psds := make([]PlayerScoreDetail, 0, 1000)
-	for rows.Next() {
-		var score int64
-		var compID string
-		if err := rows.Scan(&score, &compID); err != nil {
-			return fmt.Errorf("error Scan player_score: %w", err)
-		}
-		comp, _ := retrieveCompetition(ctx, tenantDB, compID)
-		psds = append(psds, PlayerScoreDetail{
-			competitionCreatedAt: comp.CreatedAt,
-			CompetitionTitle:     comp.Title,
-			Score:                score,
-		})
-	}
-	sort.Slice(psds, func(i, j int) bool {
-		return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
-	})
 
 	res := SuccessResult{
 		Status: true,
@@ -1830,6 +1876,14 @@ func initializeHandler(c echo.Context) error {
 		data map[tenantAndComp][]CompetitionRank
 	}{
 		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
+	}
+
+	playerScoreDetailsCache = struct {
+		mu    sync.RWMutex
+		group singleflight.Group
+		data  map[string][]PlayerScoreDetail
+	}{
+		data: make(map[string][]PlayerScoreDetail, 1000000),
 	}
 
 	res := InitializeHandlerResult{
