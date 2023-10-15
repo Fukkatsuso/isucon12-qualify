@@ -149,23 +149,23 @@ func Run() {
 	e.Logger.SetLevel(log.DEBUG)
 
 	var (
-		sqlLogger io.Closer
-		err       error
+		// sqlLogger io.Closer
+		err error
 	)
 	// sqliteのクエリログを出力する設定
 	// 環境変数 ISUCON_SQLITE_TRACE_FILE を設定すると、そのファイルにクエリログをJSON形式で出力する
 	// 未設定なら出力しない
 	// sqltrace.go を参照
-	sqliteDriverName, sqlLogger, err = initializeSQLLogger()
-	if err != nil {
-		e.Logger.Panicf("error initializeSQLLogger: %s", err)
-	}
-	defer sqlLogger.Close()
+	// sqliteDriverName, sqlLogger, err = initializeSQLLogger()
+	// if err != nil {
+	// 	e.Logger.Panicf("error initializeSQLLogger: %s", err)
+	// }
+	// defer sqlLogger.Close()
 
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(SetCacheControlPrivate)
-	e.Use(middleware.Gzip())
+	// e.Use(middleware.Gzip())
 
 	// SaaS管理者向けAPI
 	e.POST("/api/admin/tenants/add", tenantsAddHandler)
@@ -667,7 +667,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 
 	vv, err, _ := billingReportCache.group.Do(fmt.Sprintf("billingReportByCompetition_%s", comp.ID), func() (interface{}, error) {
 		// ランキングにアクセスした参加者のIDを取得する
-		vhs := []VisitHistorySummaryRow{}
+		vhs := make([]VisitHistorySummaryRow, 0, 10000)
 		if err := adminDB.SelectContext(
 			ctx,
 			&vhs,
@@ -677,24 +677,25 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		); err != nil && err != sql.ErrNoRows {
 			return nil, fmt.Errorf("error Select visit_history: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 		}
-		billingMap := map[string]string{}
+
+		// スコアを登録した参加者のIDを取得する
+		scoredPlayerIDs := make([]string, 0, 10000)
+		if err := tenantDB.SelectContext(
+			ctx,
+			&scoredPlayerIDs,
+			"SELECT player_id FROM player_score WHERE competition_id = ?",
+			comp.ID,
+		); err != nil && err != sql.ErrNoRows {
+			return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
+		}
+
+		billingMap := make(map[string]string, len(vhs)+len(scoredPlayerIDs))
 		for _, vh := range vhs {
 			// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
 			if comp.FinishedAt.Int64 < vh.MinCreatedAt {
 				continue
 			}
 			billingMap[vh.PlayerID] = "visitor"
-		}
-
-		// スコアを登録した参加者のIDを取得する
-		scoredPlayerIDs := []string{}
-		if err := tenantDB.SelectContext(
-			ctx,
-			&scoredPlayerIDs,
-			"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
-			tenantID, comp.ID,
-		); err != nil && err != sql.ErrNoRows {
-			return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 		}
 		for _, pid := range scoredPlayerIDs {
 			// スコアが登録されている参加者
@@ -810,7 +811,7 @@ func tenantsBillingHandler(c echo.Context) error {
 			ids := []struct {
 				ID string `db:"id"`
 			}{}
-			err = tenantDB.SelectContext(ctx, &ids, "SELECT id FROM competition WHERE tenant_id=?", t.ID)
+			err = tenantDB.SelectContext(ctx, &ids, "SELECT id FROM competition")
 			if err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
@@ -871,8 +872,7 @@ func playersListHandler(c echo.Context) error {
 	if err := tenantDB.SelectContext(
 		ctx,
 		&pls,
-		"SELECT * FROM player WHERE tenant_id=? ORDER BY created_at DESC",
-		v.tenantID,
+		"SELECT * FROM player ORDER BY created_at DESC",
 	); err != nil {
 		return fmt.Errorf("error Select player: %w", err)
 	}
@@ -1080,8 +1080,7 @@ func competitionsAddHandler(c echo.Context) error {
 	}
 	if err = tx.Commit(); err != nil {
 		tx.Rollback()
-		c.Response().Header().Set("Retry-After", "3")
-		return c.JSON(http.StatusTooManyRequests, FailureResult{Status: false, Message: err.Error()})
+		return fmt.Errorf("error commit: %w", err)
 	}
 
 	res := CompetitionsAddHandlerResult{
@@ -1284,6 +1283,12 @@ func competitionScoreHandler(c echo.Context) error {
 	// ランキングを更新しておく
 	go updateRanks(v.tenantID, competitionID, playerScoreRows)
 
+	// player のスコア一覧キャッシュを消しておく
+	playerScoreDetailsCache.updatedAt = time.Now().Unix()
+	for _, score := range playerScoreRows {
+		setPlayerScoreDetailsCache(score.PlayerID, nil)
+	}
+
 	return c.JSON(http.StatusOK, SuccessResult{
 		Status: true,
 		Data:   ScoreHandlerResult{Rows: rowNum},
@@ -1317,8 +1322,7 @@ func billingHandler(c echo.Context) error {
 	if err := tenantDB.SelectContext(
 		ctx,
 		&cs,
-		"SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
-		v.tenantID,
+		"SELECT * FROM competition ORDER BY created_at DESC",
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
@@ -1342,9 +1346,57 @@ func billingHandler(c echo.Context) error {
 }
 
 type PlayerScoreDetail struct {
-	competitionCreatedAt int64  `json:"-"`
-	CompetitionTitle     string `json:"competition_title" db:"competition_title"`
-	Score                int64  `json:"score" db:"score"`
+	CompetitionTitle string `json:"competition_title" db:"competition_title"`
+	Score            int64  `json:"score" db:"score"`
+}
+
+var playerScoreDetailsCache struct {
+	mu        sync.RWMutex
+	group     singleflight.Group
+	updatedAt int64
+	data      map[string][]PlayerScoreDetail
+}
+
+func getPlayerScoreDetails(ctx context.Context, tenantDB dbOrTx, playerID string) ([]PlayerScoreDetail, error) {
+	playerScoreDetailsCache.mu.RLock()
+	v := playerScoreDetailsCache.data[playerID]
+	playerScoreDetailsCache.mu.RUnlock()
+	if v != nil {
+		return v, nil
+	}
+
+	vv, err, _ := playerScoreDetailsCache.group.Do(
+		fmt.Sprintf("getPlayerScoreDetail_%s_%d", playerID, playerScoreDetailsCache.updatedAt),
+		func() (interface{}, error) {
+			psds := make([]PlayerScoreDetail, 0, 1000)
+			query := `
+				SELECT player_score.score AS score, competition.title AS competition_title
+				FROM player_score
+				LEFT JOIN competition ON player_score.competition_id = competition.id
+				WHERE player_score.player_id = ?
+				ORDER BY competition.created_at
+			`
+			err := tenantDB.SelectContext(ctx, &psds, query, playerID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("error Select player_score: playerID=%s, %w", playerID, err)
+			}
+
+			// set cache
+			setPlayerScoreDetailsCache(playerID, psds)
+			return psds, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	psds := vv.([]PlayerScoreDetail)
+	return psds, nil
+}
+
+func setPlayerScoreDetailsCache(playerID string, psds []PlayerScoreDetail) {
+	playerScoreDetailsCache.mu.Lock()
+	playerScoreDetailsCache.data[playerID] = psds
+	playerScoreDetailsCache.mu.Unlock()
 }
 
 type PlayerHandlerResult struct {
@@ -1388,37 +1440,10 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
-	query := `
-		SELECT
-			score,
-			competition_id
-		FROM
-			player_score
-		WHERE
-			player_id = ?
-	`
-	rows, err := tenantDB.QueryContext(ctx, query, playerID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("error Select player_score: tenantID=%d, playerID=%s, %w", v.tenantID, playerID, err)
+	psds, err := getPlayerScoreDetails(ctx, tenantDB, playerID)
+	if err != nil {
+		return fmt.Errorf("error getPlayerScoreDetails: %w", err)
 	}
-	defer rows.Close()
-	psds := make([]PlayerScoreDetail, 0, 1000)
-	for rows.Next() {
-		var score int64
-		var compID string
-		if err := rows.Scan(&score, &compID); err != nil {
-			return fmt.Errorf("error Scan player_score: %w", err)
-		}
-		comp, _ := retrieveCompetition(ctx, tenantDB, compID)
-		psds = append(psds, PlayerScoreDetail{
-			competitionCreatedAt: comp.CreatedAt,
-			CompetitionTitle:     comp.Title,
-			Score:                score,
-		})
-	}
-	sort.Slice(psds, func(i, j int) bool {
-		return psds[i].competitionCreatedAt < psds[j].competitionCreatedAt
-	})
 
 	res := SuccessResult{
 		Status: true,
@@ -1484,8 +1509,8 @@ func updateRanks(tenantID int64, compID string, scores []PlayerScoreRow) {
 
 func getPagedRanks(tenantID int64, compID string, rankAfter int64) []CompetitionRank {
 	rankCache.mu.RLock()
-	defer rankCache.mu.RUnlock()
 	ranks, ok := rankCache.data[tenantAndComp{tenantID: tenantID, compID: compID}]
+	rankCache.mu.RUnlock()
 	if !ok {
 		return []CompetitionRank{}
 	}
@@ -1562,6 +1587,10 @@ func competitionRankingHandler(c echo.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		// visit_history への INSERT は、大会開催中のみの実行で良い
+		if competition.FinishedAt.Valid {
+			return
+		}
 		now := time.Now().Unix()
 		if _, err := adminDB.ExecContext(
 			ctx,
@@ -1660,8 +1689,7 @@ func competitionsHandler(c echo.Context, v *Viewer, tenantDB dbOrTx) error {
 	if err := tenantDB.SelectContext(
 		ctx,
 		&cs,
-		"SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
-		v.tenantID,
+		"SELECT * FROM competition ORDER BY created_at DESC",
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
@@ -1829,6 +1857,16 @@ func initializeHandler(c echo.Context) error {
 		data map[tenantAndComp][]CompetitionRank
 	}{
 		data: make(map[tenantAndComp][]CompetitionRank, 100*1000),
+	}
+
+	playerScoreDetailsCache = struct {
+		mu        sync.RWMutex
+		group     singleflight.Group
+		updatedAt int64
+		data      map[string][]PlayerScoreDetail
+	}{
+		updatedAt: 0,
+		data:      make(map[string][]PlayerScoreDetail, 1000000),
 	}
 
 	res := InitializeHandlerResult{
