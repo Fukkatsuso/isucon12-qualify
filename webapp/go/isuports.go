@@ -201,8 +201,8 @@ func Run() {
 		e.Logger.Fatalf("failed to connect db: %v", err)
 		return
 	}
-	adminDB.SetMaxIdleConns(150)
-	adminDB.SetMaxOpenConns(150)
+	adminDB.SetMaxIdleConns(50)
+	adminDB.SetMaxOpenConns(50)
 	defer adminDB.Close()
 
 	// jwtParseOption
